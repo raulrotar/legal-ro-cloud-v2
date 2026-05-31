@@ -1,0 +1,40 @@
+#!/bin/bash
+# Sequential test of all 31 questions
+
+declare -A QUESTIONS
+QUESTIONS[Q4]="Ce județe sunt vizate de ordinele ANCPI nr. 1.642 și nr. 1.643 din decembrie 2016 privind închiderea vechilor evidențe de cadastru și publicitate imobiliară, publicate în MO nr. 76/30.I.2017?"
+QUESTIONS[Q5]="Cine a fost numit secretar de stat la Ministerul Sănătății Publice prin Decizia prim-ministrului nr. 226 din 28 decembrie 2006 și cine a contrasemnat decizia?"
+QUESTIONS[Q6]="Cine a fost eliberat din funcția de președinte, cu rang de secretar de stat, al Oficiului pentru Licență Industrială prin Decizia prim-ministrului nr. 117/2026?"
+QUESTIONS[Q7]="Care era suma contribuției anuale a României la grupul de lucru OCDE privind investițiile internaționale, aprobată prin HG nr. 420/2005, și din ce buget se asigura contravaloarea în lei?"
+QUESTIONS[Q8]="Ce articol din Legea nr. 47/1992 a fost contestat prin excepția de neconstituționalitate soluționată prin Decizia CCR nr. 922/2007?"
+QUESTIONS[Q9]="Cine a ridicat excepția de neconstituționalitate soluționată prin Decizia CCR nr. 922/2007 și la ce instanță?"
+QUESTIONS[Q10]="Cine era președintele Curții Constituționale la data pronunțării Deciziei nr. 922/2007?"
+QUESTIONS[Q11]="Ce reglementează Ordinul ministrului internelor și reformei administrative nr. 346/2007, publicat în Monitorul Oficial nr. 820/3.XII.2007?"
+QUESTIONS[Q12]="Ce ordin anterior abrogă Ordinul nr. 346/2007 privind normele metodologice pentru taxi, conform art. 2 alin. (2)?"
+QUESTIONS[Q13]="Cine a fost numit în funcția de secretar de stat la Ministerul Economiei, Digitalizării, Antreprenoriatului și Turismului prin Decizia nr. 116/2026?"
+QUESTIONS[Q14]="Ce s-a întâmplat cu Gabriel-Bogdan Ștețco în urma Deciziilor prim-ministrului nr. 115 și nr. 118 din aprilie 2026?"
+QUESTIONS[Q15]="Ce grad militar a fost acordat colonelului Rus Iosif Alexandru prin Decretul prezidențial nr. 1.418/2006?"
+QUESTIONS[Q16]="Ce hotărâre a Guvernului a înființat Zona liberă Galați și Regia Autonomă Administrația Zonei Libere Galați, modificată prin HG nr. 1.908/2006?"
+QUESTIONS[Q17]="Cine a semnat HG nr. 1.908/2006 privind extinderea regimului de zonă liberă în porturile Galați, Brăila și Constanța?"
+QUESTIONS[Q18]="Cine a fost numit în funcția de președinte al Autorității Naționale pentru Reglementare în Comunicații și Tehnologia Informației prin Decizia prim-ministrului nr. 234/2006?"
+QUESTIONS[Q19]="Cine a fost eliberat din funcția de secretar de stat la Ministerul Economiei și Comerțului prin Decizia prim-ministrului nr. 233/2006?"
+QUESTIONS[Q20]="Ce articol legal a fost contestat prin excepția de neconstituționalitate soluționată prin Decizia CCR nr. 920/2007?"
+QUESTIONS[Q21]="Cine a ridicat excepția de neconstituționalitate soluționată prin Decizia CCR nr. 920/2007 și la ce instanță?"
+QUESTIONS[Q22]="Cine a semnat HG nr. 1.447/2007 privind aprobarea Normelor financiare pentru activitatea sportivă și ce hotărâre a abrogat?"
+QUESTIONS[Q23]="Care este suma maximă per persoană decontabilă pentru o masă oficială la încheierea competițiilor sportive internaționale desfășurate în țară, conform Normelor financiare aprobate prin HG nr. 1.447/2007?"
+QUESTIONS[Q24]="Care este suma maximă per persoană per joc sau reuniune pentru băuturi răcoritoare asigurate sportivilor la competițiile sportive organizate în țară, conform HG nr. 1.447/2007?"
+QUESTIONS[Q25]="Ce lege stă la baza Normelor metodologice aprobate prin Ordinul nr. 346/2007 privind transportul în regim de taxi, și ce act normativ abrogă ordinul la data intrării sale în vigoare?"
+QUESTIONS[Q26]="Ce documente trebuie să prezinte un operator de transport persoană juridică pentru eliberarea autorizației de transport în regim de taxi, conform Ordinului nr. 346/2007?"
+QUESTIONS[Q27]="Ce act normativ aprobă Nomenclatorul domeniilor și al specializărilor/programelor de studii universitare și structura instituțiilor de învățământ superior pentru anul universitar 2026-2027, publicat în MO nr. 294 bis/14.IV.2026?"
+QUESTIONS[Q28]="Pe ce temei legal a fost adoptată HG nr. 191/2026 privind Nomenclatorul domeniilor universitare pentru 2026-2027?"
+QUESTIONS[Q29]="Ce județe sunt vizate de ordinele ANCPI nr. 1.644 și nr. 1.645 din decembrie 2016 privind închiderea vechilor evidențe de cadastru, publicate în MO nr. 76/30.I.2017?"
+QUESTIONS[Q30]="Ce act normativ constituie temeiul legal pentru închiderea vechilor evidențe de cadastru și publicitate imobiliară de către ANCPI, invocat în ordinele din MO nr. 75/30.I.2017?"
+QUESTIONS[Q31]="Ce județ vizează Ordinul directorului general al ANCPI nr. 1.642/2016 privind închiderea evidențelor de cadastru publicat în MO nr. 76/30.I.2017?"
+
+for QID in Q4 Q5 Q6 Q7 Q8 Q9 Q10 Q11 Q12 Q13 Q14 Q15 Q16 Q17 Q18 Q19 Q20 Q21 Q22 Q23 Q24 Q25 Q26 Q27 Q28 Q29 Q30 Q31; do
+    echo "=== $QID ==="
+    echo "Întrebare: ${QUESTIONS[$QID]}"
+    echo "--- Răspuns ---"
+    uv run legalro query "${QUESTIONS[$QID]}" 2>/dev/null | grep -v "Warning\|matched\|seq_len\|it/s\|deprecated\|cache"
+    echo ""
+done

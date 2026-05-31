@@ -1,0 +1,15 @@
+services:
+  mongodb:
+    image: mongodb/mongodb-atlas-local:8.0
+    container_name: legalro-v2-mongo
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongodb_v2_data:/data/db
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+
+volumes:
+  mongodb_v2_data:

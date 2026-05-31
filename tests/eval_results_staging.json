@@ -1,0 +1,10 @@
+{
+  "env": "staging",
+  "model": "BAAI/bge-m3",
+  "dimensions": 1024,
+  "Hit@3": 0.75,
+  "Hit@10": 1.0,
+  "MRR@10": 0.7022,
+  "n": 12,
+  "failure_count": 0
+}

@@ -1,0 +1,10 @@
+{
+  "env": "cloud",
+  "model": "nomic-ai/nomic-embed-text-v1.5",
+  "dimensions": 768,
+  "Hit@3": 0.0,
+  "Hit@10": 0.0,
+  "MRR@10": 0.0,
+  "n": 12,
+  "failure_count": 0
+}

@@ -1,0 +1,22 @@
+# Deploy the serving API. Triggers ONLY when serving or the shared core changes,
+# so a processing-only change never rebuilds/redeploys serving.
+name: deploy-serving
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/serving/**"
+      - "packages/core/**"
+      - "deploy/serving.Dockerfile"
+      - ".github/workflows/deploy-serving.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # TODO: build deploy/serving.Dockerfile and push to HF Spaces / registry.
+      # The path filter above is what guarantees deploy isolation.
+      - run: echo "build + deploy legalro-serving"

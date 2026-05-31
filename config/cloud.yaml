@@ -1,0 +1,40 @@
+llm:
+  provider: "gemini"
+  base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+  model: "gemini-3.1-flash-lite"
+  api_key: ""          # override via GEMINI_API_KEY env var
+  max_tokens: 8192
+  temperature: 0.1
+  agentic_max_tokens: 4096
+  agentic_timeout: 90.0
+
+# Fallback LLM if Groq rate limit is hit (uncomment and set GEMINI_API_KEY):
+# llm:
+#   provider: "gemini"
+#   base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+#   model: "gemini-2.5-flash"
+#   api_key: ""
+
+embeddings:
+  provider: "sentence-transformers"
+  model: "BAAI/bge-m3"
+  dimensions: 1024
+  batch_size: 16
+
+ocr:
+  provider: "llamaparse"   # mistral | llamaparse | docling | ocrmac (local only)
+  language: "ro"
+
+mongodb:
+  uri: ""   # set via MONGODB_URI env var
+  database: "legalro"
+
+search:
+  use_rank_fusion: false
+  vector_weight: 0.3
+  text_weight: 0.7
+  rrf_k: 60
+  num_candidates: 200
+  limit: 15
+  parent_doc_top_n: 3
+  max_parent_chars: 8000

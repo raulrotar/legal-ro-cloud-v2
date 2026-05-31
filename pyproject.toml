@@ -1,0 +1,25 @@
+# ── LegalRo monorepo (uv workspace) ───────────────────────────────────────────
+# Virtual workspace root: NOT a package itself, just the orchestrator for the
+# four member packages under packages/*. One lockfile governs everything.
+#
+#   packages/core        legalro-core        shared contract (schema, embeddings,
+#                                             store, retrieval, bundle format)
+#   packages/processing  legalro-processing  VPS/batch: PDF -> JSON -> chunks -> Mongo
+#   packages/serving     legalro-serving     HF/AWS: read-only query API
+#   packages/dashboard   legalro-dashboard   read-only observability UI
+#
+# Install everything for local dev/eval:   uv sync
+# Install a single deployable:              uv sync --package legalro-serving
+# Run a tool:                               uv run python tools/test_questions.py
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

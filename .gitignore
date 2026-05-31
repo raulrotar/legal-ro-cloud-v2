@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# secrets
+.env
+/tmp/
+
+# pipeline artifacts (Stage A bundles, caches, loader state)
+out/
+.cache/
+.load_state.json
+
+# data (kept local; not committed)
+extracted/
+laws/
+
+# macOS
+.DS_Store
+
+.claude/
+reports/

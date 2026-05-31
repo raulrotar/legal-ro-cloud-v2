@@ -1,0 +1,19 @@
+# Deploy the dashboard. Triggers ONLY on dashboard or core changes.
+name: deploy-dashboard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/dashboard/**"
+      - "packages/core/**"
+      - "deploy/dashboard.Dockerfile"
+      - ".github/workflows/deploy-dashboard.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "build + deploy legalro-dashboard"

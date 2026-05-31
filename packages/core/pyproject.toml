@@ -1,0 +1,26 @@
+[project]
+name = "legalro-core"
+version = "0.2.0"
+description = "Shared contract for LegalRo: schema, embeddings, store, retrieval, bundle format."
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "pymongo>=4.9.0",
+    "numpy>=2.0.0",
+    "pyyaml>=6.0.0",
+]
+
+# The embedding model is heavy (pulls torch). It is an extra so the dashboard
+# (which only reads Mongo) can install core without it. serving + processing
+# install core[ml]. Importing legalro_core.embeddings does NOT import torch until
+# a model is actually loaded (lazy), so the module stays importable either way.
+[project.optional-dependencies]
+ml = ["sentence-transformers>=3.0.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/legalro_core"]
