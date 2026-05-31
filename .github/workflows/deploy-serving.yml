@@ -1,5 +1,3 @@
-# Deploy the serving API. Triggers ONLY when serving or the shared core changes,
-# so a processing-only change never rebuilds/redeploys serving.
 name: deploy-serving
 
 on:
@@ -8,7 +6,8 @@ on:
     paths:
       - "packages/serving/**"
       - "packages/core/**"
-      - "deploy/serving.Dockerfile"
+      - "Dockerfile"
+      - "config/cloud.yaml"
       - ".github/workflows/deploy-serving.yml"
   workflow_dispatch:
 
@@ -16,7 +15,19 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      # TODO: build deploy/serving.Dockerfile and push to HF Spaces / registry.
-      # The path filter above is what guarantees deploy isolation.
-      - run: echo "build + deploy legalro-serving"
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Push to HF Spaces
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git config user.email "ci@github"
+          git config user.name "GitHub Actions"
+          git config credential.helper store
+          echo "https://rraul99:${HF_TOKEN}@huggingface.co" > ~/.git-credentials
+          git remote add hf https://huggingface.co/spaces/rraul99/legalro
+          git push hf main --force

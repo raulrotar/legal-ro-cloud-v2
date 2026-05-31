@@ -10,6 +10,7 @@ import os
 import time
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Query
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from legalro_core.config import load_settings
@@ -20,6 +21,13 @@ from legalro_serving.generation import run_query_hybrid
 settings = load_settings(os.getenv("CONFIG_PATH") or None)
 
 app = FastAPI(title="LegalRo API", version="2.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 _API_TOKEN = os.environ.get("API_TOKEN", "")

@@ -72,16 +72,11 @@ def hybrid_search(
     db = get_db(settings)
     query_embedding = embed_texts([query], settings, is_query=True)[0]
 
+    # Only act_type in vector_filter — act_year is not in the Atlas filterable
+    # index, so year filtering is applied as a Python post-filter after merge.
     vector_filter = {}
     if act_type:
         vector_filter["document_type"] = act_type.upper()
-    if year_from is not None or year_to is not None:
-        year_range = {}
-        if year_from is not None:
-            year_range["$gte"] = year_from
-        if year_to is not None:
-            year_range["$lte"] = year_to
-        vector_filter["act_year"] = year_range
 
     if settings.search.use_rank_fusion:
         results = _rank_fusion_search(db, query, query_embedding, vector_filter, settings)
