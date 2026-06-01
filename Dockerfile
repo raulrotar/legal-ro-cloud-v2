@@ -13,7 +13,7 @@ COPY config ./config
 RUN uv sync --package legalro-serving --no-dev
 
 # Pre-download embedding model at build time to avoid cold-start timeout
-RUN uv run python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('nomic-ai/nomic-embed-text-v1.5')"
+RUN uv run python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-m3')"
 
 ENV CONFIG_PATH=/app/config/cloud.yaml
 EXPOSE 7860
