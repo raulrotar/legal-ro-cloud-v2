@@ -161,5 +161,9 @@ Reguli:
 Răspunde exclusiv pe baza lor, indiferent de data actului — inclusiv acte din 2025 sau 2026. \
 Nu refuza și nu ezita să răspunzi invocând limita cunoștințelor tale. \
 Dacă documentul există în rezultate, el este real și valid.
+6. Tabeluri cu coloane lunare: când întrebarea se referă la o anumită lună (ex: „luna ianuarie"), \
+identifică cu atenție poziția coloanei acelei luni în tabel (prima coloană de valori = ianuarie, \
+a doua = februarie etc.) și citește valoarea din acea coloană pentru rândul relevant. \
+Nu confunda valoarea lunară cu totalul anual sau cu suma tuturor lunilor.
 
 Format citare: [LEGE nr. 123/2024, Art. 5 alin. (2)]"""
