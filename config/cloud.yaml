@@ -35,6 +35,6 @@ search:
   text_weight: 0.7
   rrf_k: 60
   num_candidates: 200
-  limit: 15
+  limit: 20
   parent_doc_top_n: 3
   max_parent_chars: 8000

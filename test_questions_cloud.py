@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Test all questions against the HF Spaces cloud API and produce a report."""
 import httpx
+import os
 import re
 import time
 import unicodedata
 from datetime import datetime
 
-HF_URL = "http://localhost:7861"
-API_TOKEN = "9576c35462b3121caf015fd0bae883112ae00a8ba5aa8804e79400837d87e244"
+HF_URL = os.getenv("LEGALRO_API_URL", "https://rraul99-legalro.hf.space")
+API_TOKEN = os.getenv("LEGALRO_API_TOKEN", "9576c35462b3121caf015fd0bae883112ae00a8ba5aa8804e79400837d87e244")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 QUESTIONS = [
     ("Q4",  "Ce județe sunt vizate de ordinele ANCPI nr. 1.642 și nr. 1.643 din decembrie 2016 privind închiderea vechilor evidențe de cadastru și publicitate imobiliară, publicate în MO nr. 76/30.I.2017?",
@@ -95,7 +97,7 @@ QUESTIONS = [
     ("Q45", "Ce hotărâre de guvern privind securitatea aeronautică a fost modificată prin HG nr. 1448/2007 publicată în MO nr. 822/3.XII.2007?",
              "HG nr. 443/2005"),
     ("Q46", "Ce număr are hotărârea de guvern privind modificarea Programului național de securitate aeronautică, publicată în MO nr. 822/3.XII.2007?",
-             "HG nr. 1448"),
+             "HG nr. 1.448"),
     ("Q47", "Ce lege a stat la baza Ordinului nr. 353/2007 al Ministerului Internelor privind normele de aplicare a serviciilor de transport public local, publicat în MO nr. 824/3.XII.2007?",
              "Legea serviciilor de transport public local nr. 92/2007"),
     ("Q48", "Ce normative aprobă Ordinul nr. 353/2007 al ministrului internelor publicat în MO nr. 824/3.XII.2007?",
@@ -116,6 +118,8 @@ QUESTIONS = [
     # ── TABLE VALUE — MO_PI_311_2026-04-20 ───────────────────────────────────
     ("Q55", "Care este cuantumul total al cotizațiilor primite în luna ianuarie, conform tabelului din MO nr. 311/20.IV.2026?",
              "conform tabelului din documentul publicat în MO nr. 311/2026"),
+    ("Q56", "Care este cuantumul total al cotizațiilor primite de Partidul Oltenilor în luna ianuarie din anul 2025, conform tabelului din MO nr. 311/20.IV.2026?",
+             "180"),
 ]
 
 
@@ -143,7 +147,11 @@ def ask(question: str) -> tuple[str, float]:
     t0 = time.time()
     resp = httpx.post(
         f"{HF_URL}/query",
-        headers={"x-api-token": API_TOKEN, "Content-Type": "application/json"},
+        headers={
+            "x-api-token": API_TOKEN,
+            "Authorization": f"Bearer {HF_TOKEN}",
+            "Content-Type": "application/json",
+        },
         json={"question": question},
         timeout=180,
     )
@@ -155,7 +163,7 @@ def ask(question: str) -> tuple[str, float]:
 lines = []
 results = []
 
-header = f"LegalRo Cloud QA Report — {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+header = f"LegalRo Cloud QA Report — {HF_URL} — {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 separator = "=" * 70
 lines += [separator, header, separator, ""]
 
