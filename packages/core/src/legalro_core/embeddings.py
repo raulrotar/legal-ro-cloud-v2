@@ -40,6 +40,9 @@ _ST_MAX_CHARS = 30000
 # Applied only at query time (embed_texts with is_query=True), not at ingest time.
 _BGE_M3_QUERY_INSTRUCTION = "Reprezintă această interogare pentru căutarea documentelor juridice românești: "
 _BGE_M3_MODEL = "BAAI/bge-m3"
+_NOMIC_MODEL = "nomic-ai/nomic-embed-text-v1.5"
+_NOMIC_QUERY_PREFIX = "search_query: "
+_NOMIC_DOC_PREFIX = "search_document: "
 
 
 def _truncate_to_tokens(text: str, model) -> str:
@@ -55,6 +58,9 @@ def embed_texts(texts: list[str], settings: Settings, is_query: bool = False) ->
         model.max_seq_length = _ST_MAX_SEQ_LEN
         if is_query and settings.embeddings.model == _BGE_M3_MODEL:
             texts = [_BGE_M3_QUERY_INSTRUCTION + t for t in texts]
+        elif settings.embeddings.model == _NOMIC_MODEL:
+            prefix = _NOMIC_QUERY_PREFIX if is_query else _NOMIC_DOC_PREFIX
+            texts = [prefix + t for t in texts]
         truncated = [t[:_ST_MAX_CHARS] for t in texts]
         return model.encode(
             truncated,

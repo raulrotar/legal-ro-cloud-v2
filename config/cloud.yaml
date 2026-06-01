@@ -17,9 +17,9 @@ llm:
 
 embeddings:
   provider: "sentence-transformers"
-  model: "BAAI/bge-m3"
-  dimensions: 1024
-  batch_size: 16
+  model: "nomic-ai/nomic-embed-text-v1.5"
+  dimensions: 768
+  batch_size: 32
 
 ocr:
   provider: "llamaparse"   # mistral | llamaparse | docling | ocrmac (local only)
