@@ -12,6 +12,12 @@ COPY config ./config
 
 RUN uv sync --package legalro-serving --no-dev
 
+# Pin HF cache to a fixed path so build-time pre-download and runtime both
+# resolve model files from the same location, regardless of which user runs
+# the container (root at build time, possibly different at runtime on HF Spaces).
+ENV HF_HOME=/app/hf_cache
+ENV SENTENCE_TRANSFORMERS_HOME=/app/hf_cache/sentence_transformers
+
 # Pre-download embedding model at build time to avoid cold-start timeout.
 # _patch_auto_processor_for_text_models() intercepts the ValueError that
 # sentence-transformers >=5.5 raises when loading BAAI/bge-m3 (a text-only
