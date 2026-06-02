@@ -14,15 +14,9 @@ RUN uv sync --package legalro-serving --no-dev
 
 # Pre-download embedding model at build time to avoid cold-start timeout.
 # _patch_auto_processor_for_text_models() intercepts the ValueError that
-# sentence-transformers ≥5.5 raises when loading BAAI/bge-m3 (a text-only
+# sentence-transformers >=5.5 raises when loading BAAI/bge-m3 (a text-only
 # model that has no AutoProcessor), and returns None instead.
-RUN uv run python -c "
-from legalro_core.embeddings import _patch_auto_processor_for_text_models
-_patch_auto_processor_for_text_models()
-from sentence_transformers import SentenceTransformer
-m = SentenceTransformer('BAAI/bge-m3')
-print('BGE-M3 pre-download OK, dim=', m.get_sentence_embedding_dimension())
-"
+RUN uv run python -c "from legalro_core.embeddings import _patch_auto_processor_for_text_models; _patch_auto_processor_for_text_models(); from sentence_transformers import SentenceTransformer; m = SentenceTransformer('BAAI/bge-m3'); print('BGE-M3 pre-download OK, dim=', m.get_sentence_embedding_dimension())"
 
 ENV CONFIG_PATH=/app/config/cloud.yaml
 EXPOSE 7860
