@@ -6,7 +6,7 @@ llm:
   max_tokens: 8192
   temperature: 0.1
   agentic_max_tokens: 4096
-  agentic_timeout: 90.0
+  agentic_timeout: 0.01
 
 # Fallback LLM if Groq rate limit is hit (uncomment and set GEMINI_API_KEY):
 # llm:
