@@ -21,6 +21,8 @@ ACT_TYPE_HEADERS = [
     ("DECIZIE",     re.compile(r'^\s*DECIZ(?:IE|IA?)\b', re.IGNORECASE | re.MULTILINE)),
     ("ORDIN",       re.compile(r'^\s*ORDIN(?:UL)?\b', re.IGNORECASE | re.MULTILINE)),
     ("LEGE",        re.compile(r'^\s*LEGEA?\b', re.IGNORECASE | re.MULTILINE)),
+    ("COMUNICAT",   re.compile(r'^\s*COMUNICAT\b', re.IGNORECASE | re.MULTILINE)),
+    ("RAPORT",      re.compile(r'^\s*R\s*A\s*P\s*O\s*R\s*T\b', re.IGNORECASE | re.MULTILINE)),
 ]
 
 # Closing signature block — the act's own date and number.
@@ -52,6 +54,14 @@ AUTHORITY_PATTERNS = [
     ("Agenția Națională pentru Resurse Minerale",
      "anrm",
      re.compile(r'Agen[țt]ia\s+Na[țt]ional[ăa]\s+pentru\s+Resurse\s+Minerale', re.IGNORECASE)),
+
+    ("Autoritatea Electorală Permanentă",
+     "aep",
+     re.compile(r'AUTORITATEA\s+ELECTORAL[ĂA]\s+PERMANENT[ĂA]', re.IGNORECASE)),
+
+    ("Autoritatea Națională Sanitară Veterinară și pentru Siguranța Alimentelor",
+     "ansvsa",
+     re.compile(r'Autorit[aă]tea\s+Na[țt]ional[ăa]\s+Sanitar[ăa]\s+Veterinar[ăa]', re.IGNORECASE)),
 
     ("Banca Națională a României",
      "bnr",

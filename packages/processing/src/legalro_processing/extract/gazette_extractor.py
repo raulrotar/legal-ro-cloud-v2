@@ -54,9 +54,17 @@ SIGNED_RE = re.compile(
 # Fallback: extract true act number from body text when segmenter produces a wrong one.
 # Match a standalone act-type + number header line (e.g. "DECIZIA  Nr. 922\ndin 18 oct")
 # NOT inline references like "art. 21 din Legea nr. 47/1992".
+# Handles both normal text and letterspaced headers (e.g. "D E C I Z I A  Nr. 574")
+# used by Constitutional Court decisions in modern PDFs.
 _ACT_NUMBER_IN_TEXT = re.compile(
-    r'^(?:DECIZIA|HOTĂRÂREA|DECRETUL|ORDINUL|ORDONAN[TȚ]A)\s{1,4}[Nn]r\.\s*([\d.]+)',
+    r'^(?:D\s*E\s*C\s*I\s*Z\s*I\s*A|DECIZIA|H\s*O\s*T\s*[ĂA]\s*R\s*[ÂA]\s*R\s*E\s*A|HOTĂRÂREA|DECRETUL|ORDINUL|ORDONAN[TȚ]A)\s{0,6}[Nn]r\.?\s*([\d.]+)',
     re.IGNORECASE | re.MULTILINE,
+)
+
+# Countersigned-by block: "Contrasemnează:" followed by name lines.
+_COUNTERSIGNED_RE = re.compile(
+    r'Contrasemneaz[ăa][:.]?\s*\n((?:[^\n]+\n?){1,6})',
+    re.IGNORECASE,
 )
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -435,6 +443,7 @@ _DOC_TYPE_PATTERNS = [
     (re.compile(r'\bordonan[țt][ăa]\b', re.I), "ORDONANȚĂ"),
     (re.compile(r'\brectificare\b', re.I), "RECTIFICARE"),
     (re.compile(r'\bcomunicat\b', re.I), "COMUNICAT"),
+    (re.compile(r'\braport\b', re.I), "RAPORT"),
     (re.compile(r'\banun[țt]\b', re.I), "ANUNT"),
 ]
 
@@ -483,13 +492,16 @@ def _build_act(
     elif gazette_year:
         act_year = gazette_year
 
-    # Fallback: when act_number is missing or looks like the gazette issue number
+    # Fallback: when act_number is missing, is "0", or looks like the gazette issue number
     # (not a real act number), try to extract the true number from the act body
-    # (e.g. "DECIZIA Nr. 922" → "922"). Search up to 4000 chars since the act
-    # header may be preceded by signatures from a prior decision on the same page.
-    if not act_number or (gazette_year and act_number == str(meta.get("_gazette_issue_number", ""))):
+    # (e.g. "DECIZIA Nr. 922" → "922", or letterspaced "D E C I Z I A  Nr. 574" → "574").
+    # Search up to 4000 chars since the act header may be preceded by signatures.
+    _gazette_issue_str = str(meta.get("_gazette_issue_number", ""))
+    if not act_number or act_number == "0" or (gazette_year and act_number == _gazette_issue_str):
         body_head = text[:4000]
-        m_in_text = _ACT_NUMBER_IN_TEXT.search(body_head)
+        # Normalise letterspacing line-by-line for the header search
+        body_head_norm = "\n".join(strip_letterspacing(line) for line in body_head.split("\n"))
+        m_in_text = _ACT_NUMBER_IN_TEXT.search(body_head) or _ACT_NUMBER_IN_TEXT.search(body_head_norm)
         if m_in_text:
             candidate = m_in_text.group(1).rstrip(".")
             if candidate != act_number:
@@ -498,8 +510,36 @@ def _build_act(
                 )
                 act_number = candidate
 
+    # For DCC acts, always prefer the letterspaced header number over the closing-block
+    # fallback, which often picks up a wrong number from a subsequent act on the same page.
+    doc_type_check = str(meta.get("doc_type", ""))
+    if doc_type_check == "DCC":
+        body_head = text[:4000]
+        body_head_norm = "\n".join(strip_letterspacing(line) for line in body_head.split("\n"))
+        m_dcc = _ACT_NUMBER_IN_TEXT.search(body_head_norm)
+        if m_dcc:
+            candidate = m_dcc.group(1).rstrip(".")
+            if candidate != act_number:
+                act_warnings.append(
+                    f"DCC act_number corrected from {act_number!r} to {candidate!r}"
+                )
+                act_number = candidate
+
     page_start = page_range[0] if page_range else 0
     page_end = page_range[-1] if page_range else 0
+
+    # Extract countersignatures from "Contrasemnează:" block
+    countersigned_by: list[str] = []
+    cs_m = _COUNTERSIGNED_RE.search(text)
+    if cs_m:
+        raw_cs = cs_m.group(1)
+        for line in raw_cs.splitlines():
+            name = line.strip().strip(",;")
+            if name and not re.match(r'^(p\.?\s*)?(?:Prim|Minist|Preș|Direc)', name, re.IGNORECASE):
+                countersigned_by.append(name)
+            elif re.match(r'^[A-ZĂÂÎȘȚ][a-zăâîșț]', name):
+                countersigned_by.append(name)
+        countersigned_by = list(dict.fromkeys(countersigned_by))  # deduplicate
 
     return LegalAct(
         act_index=act_idx,
@@ -516,7 +556,7 @@ def _build_act(
         page_start=page_start,
         page_end=page_end,
         signed_by=signed_by_unique,
-        countersigned_by=[],
+        countersigned_by=countersigned_by,
         extraction_warnings=act_warnings,
     )
 

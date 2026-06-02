@@ -23,27 +23,56 @@ from legalro_core.store import get_db
 
 
 TARGETS = [
-    # ── MO_820_2007: already correctly split by previous run; just re-ingest
-    #    (keeping this so the script remains idempotent if run again)
+    # ── All 1989 scanned MOs: re-ingest with new fragment-merge + ghost-suppression logic
+    {
+        "mode": "reingest",
+        "source_issue_id": "PI_1_1989",
+        "json_path": "extracted/1989/12/22/MO_PI_1_1989-12-22.json",
+        "label": "MO_PI_1_1989 (scanned fragment merge)",
+    },
+    {
+        "mode": "reingest",
+        "source_issue_id": "PI_2_1989",
+        "json_path": "extracted/1989/12/25/MO_PI_2_1989-12-25.json",
+        "label": "MO_PI_2_1989 (scanned fragment merge — Q35)",
+    },
+    {
+        "mode": "reingest",
+        "source_issue_id": "PI_3_1989",
+        "json_path": "extracted/1989/12/26/MO_PI_3_1989-12-26.json",
+        "label": "MO_PI_3_1989 (scanned fragment merge — Q33/Q34 context)",
+    },
+    {
+        "mode": "reingest",
+        "source_issue_id": "PI_4_1989",
+        "json_path": "extracted/1989/12/27/MO_PI_4_1989-12-27.json",
+        "label": "MO_PI_4_1989 (ghost suppression)",
+    },
+    {
+        "mode": "reingest",
+        "source_issue_id": "PI_5_1989",
+        "json_path": "extracted/1989/12/27/MO_PI_5_1989-12-27.json",
+        "label": "MO_PI_5_1989 (scanned fragment merge + ghost suppression)",
+    },
+    {
+        "mode": "reingest",
+        "source_issue_id": "PI_6_1989",
+        "json_path": "extracted/1989/12/29/MO_PI_6_1989-12-29.json",
+        "label": "MO_PI_6_1989 (scanned fragment merge + ghost suppression)",
+    },
+    # ── MO_820_2007: ghost act suppression (footnote-only acts removed)
     {
         "mode": "reingest",
         "source_issue_id": "PI_820_2007",
         "json_path": "extracted/2007/12/03/MO_PI_820_2007-12-03.json",
-        "label": "MO_PI_820_2007 (ANCEX Ord 346 + MIRA taxi Ord 356 + HG 1448)",
+        "label": "MO_PI_820_2007 (ghost suppression + metadata reclassify)",
     },
-    # ── MO_2_1989: segment.py fix (merge 38-char fragment) → must re-extract from PDF
-    {
-        "mode": "reextract",
-        "source_issue_id": "PI_2_1989",
-        "pdf_path": "laws/1989/12/25/MO_PI_2_1989-12-25.pdf",
-        "label": "MO_PI_2_1989 (merge 38-char column-break fragment — Q34/Q35)",
-    },
-    # ── MO_311_2026: cotizatii table fix in ingest layer → re-ingest only
+    # ── MO_311_2026: cotizatii section title fix + AEP/ANSVSA reclassification
     {
         "mode": "reingest",
         "source_issue_id": "PI_311_2026",
         "json_path": "extracted/2026/04/20/MO_PI_311_2026-04-20.json",
-        "label": "MO_PI_311_2026 (cotizatii table restructure — Q56)",
+        "label": "MO_PI_311_2026 (cotizatii title fix + AEP/ANSVSA reclassify — Q56)",
     },
 ]
 
@@ -152,22 +181,36 @@ def main():
     print(f"STAGE DB chunks after:  {total_after}  (delta={total_after - total_before:+d})")
 
     # Spot-checks
-    print("\nVerifying MO_2_1989 chunks:")
-    for chunk in db.chunks.find(
-        {"source_issue_id": "PI_2_1989"},
-        {"act_number": 1, "text": 1},
-    ):
-        print(f"  act_number={chunk.get('act_number')} | text[:150]={chunk.get('text','')[:150]}")
+    print("\nVerifying PI_2_1989 — merged chunk should contain both 'de Interne' and 'Apărării':")
+    mo2_chunks = list(db.chunks.find({"source_issue_id": "PI_2_1989"}, {"text": 1}))
+    print(f"  total chunks: {len(mo2_chunks)}")
+    for chunk in mo2_chunks:
+        txt = chunk.get("text", "")
+        has_mi = "interne" in txt.lower()
+        has_man = "apărării" in txt.lower() or "apararii" in txt.lower()
+        has_integra = "integra" in txt.lower() or "subordon" in txt.lower()
+        if has_mi and has_man:
+            print(f"  ✓ Found chunk with both MI+MAN | integra={has_integra} | text[:200]={txt[:200]!r}")
 
-    print("\nVerifying PI_311_2026 Oltenilor chunk prefix:")
+    print("\nVerifying PI_311_2026 Oltenilor chunk — title should say 'sumelor lunare':")
     for chunk in db.chunks.find(
         {"source_issue_id": "PI_311_2026", "text": {"$regex": "STRUCTURA TABEL", "$options": "i"}},
         {"text": 1},
     ):
-        print(f"  text[:300]={chunk.get('text','')[:300]}")
+        txt = chunk.get("text", "")
+        print(f"  cuantumului total present? {'cuantumului total' in txt.lower()}")
+        print(f"  sumelor lunare present?    {'sumelor lunare' in txt.lower()}")
+        print(f"  luna_1_ianuarie value: {[l for l in txt.split(chr(10)) if 'luna_1' in l][:2]}")
         break
 
-    print("\nVerifying MO_820_2007 act_number groups:")
+    print("\nVerifying PI_311_2026 AEP chunks — should have issuing_authority set:")
+    for doc in db.chunks.aggregate([
+        {"$match": {"source_issue_id": "PI_311_2026"}},
+        {"$group": {"_id": {"dt": "$document_type", "auth": "$issuing_authority"}, "count": {"$sum": 1}}},
+    ]):
+        print(f"  doc_type={doc['_id']['dt']} auth={doc['_id']['auth']!r} count={doc['count']}")
+
+    print("\nVerifying PI_820_2007 act_number groups:")
     from pymongo import ASCENDING
     for doc in db.chunks.aggregate([
         {"$match": {"source_issue_id": "PI_820_2007"}},

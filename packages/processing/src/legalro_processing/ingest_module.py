@@ -4,6 +4,7 @@ No PDF access, no OCR. Pure: JSON in, Atlas chunks out.
 """
 from __future__ import annotations
 
+import dataclasses
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +14,29 @@ if TYPE_CHECKING:
 
 ALINEAT_IN_PATH = re.compile(r'alin_(\d+)')
 LITERA_IN_PATH = re.compile(r'lit_([a-z])')
+
+# ── Scanned-era act fragment handling ─────────────────────────────────────────
+# LlamaParse reads two-column scanned PDFs left-column-first, producing acts
+# that start mid-sentence (genitive case continuation like "Ministerului de
+# Interne...") rather than a proper institutional header.  These fragments must
+# be merged with the preceding act before chunking so retrieval can find the
+# complete sentence.
+#
+# An act is an "opener" (not a fragment) when its first 200 chars contain one of:
+#   - act-type keywords: DECRET, HOTARARE, ORDIN, LEGE, COMUNICAT, RAPORT …
+#   - nominative institutional names: MINISTERUL (word boundary), CURTEA, GUVERNUL …
+#   - article markers: Art. N
+#
+_ACT_OPENER_RE = re.compile(
+    r'(?:'
+    r'DECRET(?:-LEGE)?|HOT[ĂA]R[ÂA]RE|ORDIN(?:UL)?|LEGE\b|OUG\b|COMUNICAT|'
+    r'DECIZIE|RAPORT|ANUN[TȚ]|RECTIFICARE|'
+    r'MINISTERUL\b|CURTEA\b|GUVERNUL\b|PARLAMENTUL\b|AGEN[TȚ]IA\b|BANCA\b|'
+    r'PRE[ȘS]EDINTELE\b|CONSILIUL\b|AUTORITATEA\b|'
+    r'Art\.\s*\d'
+    r')',
+    re.IGNORECASE | re.UNICODE,
+)
 
 # ── Monthly cotizații table restructuring ────────────────────────────────────
 # Party financing reports published in MO contain a 12-column monthly table
@@ -87,8 +111,106 @@ def _restructure_cotizatii_table(text: str) -> str:
         text,
         flags=re.IGNORECASE,
     )
+    # Also rename the section title so "cuantumul total" doesn't cue Gemini to
+    # return the annual sum instead of the requested monthly value.
+    text_cleaned = re.sub(
+        r'Situa[tț]ia\s+cuantumului\s+total\s+al\s+cotiza[tț]iilor',
+        'Situatia sumelor lunare ale cotizatiilor',
+        text_cleaned,
+        flags=re.IGNORECASE,
+    )
+    # Clean bare column header "Cuantumul\ntotal" (without a digit following directly)
+    text_cleaned = re.sub(
+        r'\bCuantumul\s*\n\s*total\s*\n',
+        '',
+        text_cleaned,
+        flags=re.IGNORECASE,
+    )
 
     return '\n'.join(lines) + '\n' + text_cleaned
+
+
+def _is_act_fragment(full_text: str) -> bool:
+    """True if the act text is a mid-sentence OCR fragment with no recognizable act opener."""
+    head = (full_text or "").strip()[:200]
+    return not _ACT_OPENER_RE.search(head)
+
+
+def _merge_scanned_fragments(acts: list) -> list:
+    """Merge consecutive acts that are OCR column-break fragments into the preceding act.
+
+    In scanned two-column PDFs (1989 era), LlamaParse reads column 1 then column 2,
+    sometimes splitting a sentence across two "acts".  An act is a fragment when its
+    first 200 chars contain no recognizable act-type keyword or institutional name —
+    i.e. it starts mid-sentence (e.g. "Ministerului de Interne..." genitive form).
+    """
+    if len(acts) <= 1:
+        return acts
+    merged = [acts[0]]
+    for act in acts[1:]:
+        text = (act.full_text or "").strip()
+        if not text:
+            continue
+        if _is_act_fragment(text):
+            prev = merged[-1]
+            combined = (prev.full_text or "").rstrip() + "\n" + text
+            merged[-1] = dataclasses.replace(prev, full_text=combined)
+        else:
+            merged.append(act)
+    return merged
+
+
+def _suppress_short_acts(acts: list) -> list:
+    """Remove acts that are too small to produce a meaningful chunk.
+
+    Ghost acts arise from OCR footnotes, blank form templates, or column-break
+    artefacts that the segmenter incorrectly promotes to act boundaries.
+    Threshold: < 80 chars AND the text contains no recognised act-type keyword.
+    """
+    result = []
+    for act in acts:
+        text = (act.full_text or "").strip()
+        if len(text) < 80 and _is_act_fragment(text):
+            continue
+        result.append(act)
+    return result
+
+
+def _reclassify_act_metadata(act, gazette_year: int):
+    """Re-derive doc_type and issuing_authority for UNKNOWN/empty acts at ingest time.
+
+    Runs the same regex-based metadata extractor used during extraction, applied
+    to acts that were classified as UNKNOWN (e.g. AEP RAPORT, ANSVSA ORDIN) so
+    that the chunk metadata is correct without requiring a full re-extraction.
+    Returns a new act instance (or the same if nothing changed).
+    """
+    if act.doc_type != "UNKNOWN" and act.issuing_authority:
+        return act  # already classified
+
+    try:
+        from legalro_processing.extract.metadata import extract_metadata
+        from legalro_processing.extract.segment import RawAct as _RawAct
+    except ImportError:
+        return act
+
+    raw = _RawAct(
+        text=act.full_text or "",
+        title=act.title or "",
+        page_range=[],
+        position_in_gazette=act.act_index,
+    )
+    meta = extract_metadata(raw, gazette_year)
+
+    new_doc_type = act.doc_type
+    new_authority = act.issuing_authority
+    if act.doc_type == "UNKNOWN" and meta["doc_type"] != "UNKNOWN":
+        new_doc_type = meta["doc_type"]
+    if not act.issuing_authority and meta["issuing_authority"]:
+        new_authority = meta["issuing_authority"]
+
+    if new_doc_type == act.doc_type and new_authority == act.issuing_authority:
+        return act
+    return dataclasses.replace(act, doc_type=new_doc_type, issuing_authority=new_authority)
 
 
 def run_ingestion(json_path: str | Path, settings: "Settings") -> dict:
@@ -110,6 +232,15 @@ def run_ingestion(json_path: str | Path, settings: "Settings") -> dict:
         return {"gazette_id": "", "acts_ingested": 0, "chunks_created": 0, "status": "skipped"}
 
     source_issue_id = f"P{gazette.part}_{gazette.issue_number}{'Bis' if gazette.is_bis else ''}_{gazette.issue_year}"
+
+    # ── Pre-process acts ──────────────────────────────────────────────────────
+    acts_processed = list(gazette.acts)
+    if gazette.era == "scanned":
+        # Merge mid-sentence column-break fragments before chunking
+        acts_processed = _merge_scanned_fragments(acts_processed)
+        acts_processed = _suppress_short_acts(acts_processed)
+    # Re-classify UNKNOWN acts for all eras (AEP, ANSVSA, etc.)
+    acts_processed = [_reclassify_act_metadata(a, gazette.issue_year) for a in acts_processed]
 
     gazette_doc = {
         "issue_number": gazette.issue_number,
@@ -142,7 +273,7 @@ def run_ingestion(json_path: str | Path, settings: "Settings") -> dict:
 
     act_warnings: list[str] = []
 
-    for act in gazette.acts:
+    for act in acts_processed:
         if not act.full_text or len(act.full_text) < 20:
             continue
 

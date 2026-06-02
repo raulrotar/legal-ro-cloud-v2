@@ -33,7 +33,7 @@ PAGE_START_AUTHORITIES = re.compile(
     r'GUVERNUL\s+ROM[ÂA]NIEI|'
     r'PRE[ȘS]EDINTELE\s+ROM[ÂA]NIEI|'
     r'BANCA\s+NA[ȚT]IONAL[ĂA]|'
-    r'MINISTERUL)',
+    r'MINISTERUL\b)',  # \b prevents matching genitive "Ministerului" (two-column OCR artifact)
     re.IGNORECASE,
 )
 
@@ -357,16 +357,17 @@ def _segment_by_patterns(full_text: str) -> list[RawAct]:
         boundaries.append(m.start())
 
     # For 1989 communiqués and scanned acts without institutional headers:
-    # also split on numbered-item paragraphs ("1. …", "2. …") and communiqué headers.
-    # Items appear after blank lines (\n\n) rather than strict line-starts.
-    # This gives each numbered measure/article its own retrievable chunk.
+    # split on act-type headers (COMUNICAT, DECRET-LEGE) first.
+    # Only fall back to numbered-item paragraphs when NO act-type header is found,
+    # because numbered items are paragraph-level structure WITHIN an act (not act boundaries)
+    # and splitting on them in two-column OCR documents causes sentence fragmentation.
     if not boundaries:
         for m in re.finditer(r'(?m)^(Comunicat|COMUNICAT|Decret-lege|DECRET-LEGE)\b', full_text):
             boundaries.append(m.start())
-        # Numbered items: digit(s) + period + space + capital letter, after blank line or at start
-        for m in re.finditer(r'(?:^|\n\n)(\d{1,2}\.\s+[A-ZĂÂÎȘȚ])', full_text):
-            # Use the start of the digit, not the \n\n
-            boundaries.append(m.start(1))
+        # Numbered items only as last resort when no act-type header found at all
+        if not boundaries:
+            for m in re.finditer(r'(?:^|\n\n)(\d{1,2}\.\s+[A-ZĂÂÎȘȚ])', full_text):
+                boundaries.append(m.start(1))
 
     boundaries = sorted(set(boundaries))
 
