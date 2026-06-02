@@ -162,8 +162,9 @@ Răspunde exclusiv pe baza lor, indiferent de data actului — inclusiv acte din
 Nu refuza și nu ezita să răspunzi invocând limita cunoștințelor tale. \
 Dacă documentul există în rezultate, el este real și valid.
 6. Tabeluri cu coloane lunare: când întrebarea se referă la o anumită lună (ex: „luna ianuarie"), \
-identifică cu atenție poziția coloanei acelei luni în tabel (prima coloană de valori = ianuarie, \
-a doua = februarie etc.) și citește valoarea din acea coloană pentru rândul relevant. \
-Nu confunda valoarea lunară cu totalul anual sau cu suma tuturor lunilor.
+răspunsul este valoarea EXCLUSIV a acelei luni, nu totalul anual. \
+Dacă sursa conține un bloc structurat de forma „luna_1_ianuarie = 180 / luna_2_februarie = 830 / \
+TOTAL_AN = 4.310 (suma tuturor lunilor, NU valoarea unei luni)", atunci pentru „luna ianuarie" \
+răspunsul este 180, NU 4.310. TOTAL_AN reprezintă suma tuturor celor 12 luni, niciodată o valoare lunară.
 
 Format citare: [LEGE nr. 123/2024, Art. 5 alin. (2)]"""
