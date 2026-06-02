@@ -30,3 +30,19 @@ search:
   limit: 15
   parent_doc_top_n: 3
   max_parent_chars: 8000
+
+# ── LLM-based extraction (Option B) ──────────────────────────────────────────
+# Set enabled: true to activate.  Phases are independent toggles.
+# When base_url/model are empty, inherits from llm: above (local MLX server).
+# For cloud Gemini, set base_url + model explicitly and set api_key via
+# EXTRACTION_LLM_API_KEY env var (or GEMINI_API_KEY which is auto-inherited).
+extraction_llm:
+  enabled: true
+  metadata_enabled: true       # phase 1: LLM extracts doc_type, title, authority, number
+  segmentation_enabled: false  # phase 2: LLM segmentation (SCANNED era only)
+  vlm_enabled: false           # phase 3: vision model on page images (SCANNED only)
+  base_url: ""                 # empty → uses llm.base_url (local MLX: http://localhost:8080/v1)
+  model: ""                    # empty → uses llm.model (mlx-community/Qwen3.5-9B-4bit)
+  temperature: 0.0
+  max_tokens: 1024
+  max_retries: 2

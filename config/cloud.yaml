@@ -38,3 +38,18 @@ search:
   limit: 20
   parent_doc_top_n: 3
   max_parent_chars: 8000
+
+# ── LLM-based extraction (Option B) ──────────────────────────────────────────
+# Set enabled: true to activate during extraction runs.
+# On cloud: inherits llm.base_url + model (Gemini) and GEMINI_API_KEY.
+# api_key is set via GEMINI_API_KEY env var — do not hardcode here.
+extraction_llm:
+  enabled: false               # flip to true when running extraction on cloud
+  metadata_enabled: true       # phase 1: doc_type, title, authority, number
+  segmentation_enabled: false  # phase 2: act boundary segmentation (SCANNED only)
+  vlm_enabled: false           # phase 3: vision model on page images (SCANNED only)
+  base_url: ""                 # empty → uses llm.base_url (Gemini)
+  model: ""                    # empty → uses llm.model (gemini-3.1-flash-lite)
+  temperature: 0.0
+  max_tokens: 1024
+  max_retries: 2
