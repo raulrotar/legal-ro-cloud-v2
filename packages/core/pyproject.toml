@@ -16,7 +16,7 @@ dependencies = [
 # install core[ml]. Importing legalro_core.embeddings does NOT import torch until
 # a model is actually loaded (lazy), so the module stays importable either way.
 [project.optional-dependencies]
-ml = ["sentence-transformers>=3.0.0,<5.0.0"]
+ml = ["sentence-transformers>=3.0.0,<5.5.0"]
 
 [build-system]
 requires = ["hatchling"]

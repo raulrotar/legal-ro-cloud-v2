@@ -43,7 +43,8 @@ def run_query_hybrid(question: str, settings: Settings) -> str:
             question,
             model_settings={"max_tokens": agentic_max_tokens},
         )
-        usage = result.usage  # property in pydantic-ai ≥ 1.x (was a method before)
+        # result.usage is a method in pydantic-ai ≤1.61; a property in later versions
+        usage = result.usage() if callable(result.usage) else result.usage
         _print_usage(
             {"prompt_tokens": usage.request_tokens, "completion_tokens": usage.response_tokens,
              "total_tokens": usage.total_tokens},
