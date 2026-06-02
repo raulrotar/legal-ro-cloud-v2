@@ -7,11 +7,41 @@ _mlx_model = None
 
 # ── sentence-transformers (cloud / cross-platform) ────────────────────────────
 
+def _patch_auto_processor_for_text_models() -> None:
+    """Workaround for sentence-transformers ≥5.5 calling AutoProcessor on text-only models.
+
+    sentence-transformers 5.5.x tries to load an AutoProcessor for every model.
+    Text-only models like BAAI/bge-m3 have no processor config, so transformers
+    raises ValueError. We patch AutoProcessor.from_pretrained to return None for
+    those models instead of raising, which sentence-transformers handles gracefully.
+    """
+    try:
+        from transformers import AutoProcessor
+        _orig_fn = AutoProcessor.from_pretrained.__func__
+
+        @classmethod  # type: ignore[misc]
+        def _safe_from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+            try:
+                return _orig_fn(cls, pretrained_model_name_or_path, *args, **kwargs)
+            except ValueError as exc:
+                if "Unrecognized processing class" in str(exc):
+                    return None
+                raise
+
+        AutoProcessor.from_pretrained = _safe_from_pretrained
+    except Exception:
+        pass
+
+
 def _get_st_model(settings: Settings):
     global _st_model
     if _st_model is None:
+        import sentence_transformers as _st_pkg
+        print(f"[embeddings] loading {settings.embeddings.model} (sentence-transformers {_st_pkg.__version__})", flush=True)
+        _patch_auto_processor_for_text_models()
         from sentence_transformers import SentenceTransformer
         _st_model = SentenceTransformer(settings.embeddings.model)
+        print(f"[embeddings] model loaded OK, dim={_st_model.get_sentence_embedding_dimension()}", flush=True)
     return _st_model
 
 

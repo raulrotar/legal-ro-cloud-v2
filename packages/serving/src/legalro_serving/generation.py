@@ -76,7 +76,11 @@ def run_query_hybrid(question: str, settings: Settings) -> str:
 def run_query(question: str, settings: Settings, _retries: int = 3) -> str:
     """Single-turn RAG: search → assemble context → one LLM call, thinking off."""
     import time
-    context = assemble_context(hybrid_search(question, settings), settings)
+    print(f"[query] embed+search start", flush=True)
+    results = hybrid_search(question, settings)
+    print(f"[query] search done — {len(results)} chunks", flush=True)
+    context = assemble_context(results, settings)
+    print(f"[query] context assembled ({len(context)} chars), calling LLM", flush=True)
     user_msg = f"Documente relevante:\n{context}\n\nÎntrebare: {question}"
     api_key = settings.llm.api_key or "local"
     for attempt in range(_retries):
@@ -98,6 +102,7 @@ def run_query(question: str, settings: Settings, _retries: int = 3) -> str:
             )
             resp.raise_for_status()
             data = resp.json()
+            print(f"[query] LLM response OK", flush=True)
             _print_usage(data.get("usage", {}), label="single-turn")
             return data["choices"][0]["message"]["content"]
         except httpx.HTTPStatusError as exc:
