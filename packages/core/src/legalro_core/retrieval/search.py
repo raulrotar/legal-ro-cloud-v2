@@ -5,11 +5,18 @@ from legalro_core.embeddings import embed_texts
 from legalro_core.store import get_db
 
 _ACT_NR_RE = re.compile(r'\bnr\.?\s*([\d.]+\d)/(\d{4})\b', re.IGNORECASE)
-_MO_NR_RE = re.compile(r'\bMO\b.*?nr\.?\s*(\d+)', re.IGNORECASE)
+# Captures MO number AND optionally the year when the query contains "MO nr. N/YYYY".
+# Group 1 = MO issue number, Group 2 = year (4 digits, optional).
+_MO_NR_RE = re.compile(r'\bMO\b.*?nr\.?\s*(\d+)(?:[/_](\d{4}))?', re.IGNORECASE)
 _PI_RE = re.compile(r'\bPI_(\d+)_(\d{4})\b', re.IGNORECASE)
 
 _PIPELINE_LIMIT = 80  # candidates per pipeline before RRF merge
-_METADATA_BOOST = 0.005  # small additive boost for act-number/MO matches
+_METADATA_BOOST = 0.01   # base additive boost for act-number/MO matches
+# Multiplier applied when the MO number AND year both match exactly — much
+# stronger signal, used to disambiguate issues with the same number across years
+# (e.g. PI_2_1989 vs PI_2_2007) and to overcome BM25 noise from documents that
+# share date/keyword overlap with the target issue (e.g. MO_3/1989 vs MO_2/1989).
+_MO_EXACT_MULTIPLIER = 15
 
 # Bare "Decizia 922 2007" or "Decizia nr. 922 din 2007" — no slash
 _ACT_NR_BARE_RE = re.compile(
@@ -34,6 +41,8 @@ def _parse_query_metadata(query: str) -> dict:
     m = _MO_NR_RE.search(query)
     if m:
         meta["mo_number"] = m.group(1)
+        if m.group(2):
+            meta["mo_year"] = int(m.group(2))
     return meta
 
 
@@ -52,7 +61,15 @@ def _apply_metadata_boost(docs: list[dict], meta: dict) -> list[dict]:
             boost += _METADATA_BOOST * 0.5
         if mo_num:
             issue = doc.get("source_issue_id", "")
-            if mo_num in issue:
+            mo_year = meta.get("mo_year")
+            if mo_year:
+                # Exact issue-ID match: PI_{n}_{year} or PI_{n}Bis_{year}
+                # Strong boost — decisively favours the right issue when the
+                # query explicitly states both MO number and year.
+                if issue in (f"PI_{mo_num}_{mo_year}", f"PI_{mo_num}Bis_{mo_year}"):
+                    boost += _METADATA_BOOST * _MO_EXACT_MULTIPLIER
+            elif mo_num in issue:
+                # Fallback: no year in query — use weak substring boost
                 boost += _METADATA_BOOST
         if boost:
             doc["rrf_score"] = doc.get("rrf_score", 0.0) + boost

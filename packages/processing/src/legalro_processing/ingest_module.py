@@ -232,6 +232,16 @@ def _build_text_embedded(chunk_text: str, act, source_issue_id: str) -> str:
 
     if act.issuing_authority:
         parts.append(act.issuing_authority)
+    elif "STRUCTURA TABEL COTIZATII" in chunk_text:
+        # Party financing monthly tables are extracted as UNKNOWN acts with no
+        # authority.  Without a party name in the prefix, BGE-M3 cannot anchor
+        # the chunk to party-specific queries ("Partidul Oltenilor luna ianuarie").
+        # Extract the party name from the chunk body and add it explicitly.
+        party_m = re.search(r'(Partidul[ \t]+\w+(?:[ \t]+\w+)?)', chunk_text, re.IGNORECASE)
+        if party_m:
+            parts.append(party_m.group(1).strip())
+        parts.append("cotizatii lunare 12 luni")
+
     if source_issue_id:
         parts.append(f"MO {source_issue_id}")
     if act.act_year:
