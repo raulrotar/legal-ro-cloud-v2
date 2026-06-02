@@ -4,6 +4,42 @@ from pydantic import Field
 import yaml
 
 
+class ExtractionLLMConfig(BaseSettings):
+    """Configuration for the optional LLM-based extraction stage.
+
+    All fields default to False/empty so the stage is completely opt-in.
+    When ``enabled=False`` (the default) the pipeline behaves exactly as it
+    did before this feature was introduced — no LLM calls, no latency change.
+
+    Provider resolution:
+      - If ``base_url`` / ``model`` / ``api_key`` are empty, the extraction
+        stage inherits the values from ``Settings.llm`` at call time.
+      - Set them explicitly to route extraction to a different endpoint (e.g.
+        a local vLLM server) while keeping generation on cloud Gemini.
+
+    Phases:
+      1. ``metadata_enabled`` — LLM reads per-act OCR text, returns structured
+         fields (doc_type, act_number, issuing_authority, title, …).  The
+         verbatim ``full_text`` is NEVER in the LLM output path.
+      2. ``segmentation_enabled`` — LLM returns act boundaries as character
+         offsets into the concatenated OCR text; Python slices ``RawAct.text``
+         from the verbatim source.  Only active for the SCANNED era.
+      3. ``vlm_enabled`` — Vision-language model on page images (SCANNED era
+         only).  Emits the same metadata/boundary DTO as phase 1; text still
+         comes from OCR.  Requires a vision-capable ``model``.
+    """
+    enabled: bool = False               # master toggle — default OFF = exact legacy behaviour
+    metadata_enabled: bool = False      # phase 1: LLM metadata extraction
+    segmentation_enabled: bool = False  # phase 2: LLM segmentation via offsets
+    vlm_enabled: bool = False           # phase 3: VLM on page images (SCANNED only)
+    base_url: str = ""                  # empty → inherit Settings.llm.base_url
+    model: str = ""                     # empty → inherit Settings.llm.model
+    api_key: str = Field(default="", alias="api_key")
+    temperature: float = 0.0           # 0.0 recommended for structured extraction
+    max_tokens: int = 1024
+    max_retries: int = 2
+
+
 class LLMConfig(BaseSettings):
     provider: str = "gemini"
     base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
@@ -51,6 +87,7 @@ class Settings(BaseSettings):
     ocr: OCRConfig = Field(default_factory=OCRConfig)
     mongodb: MongoDBConfig = Field(default_factory=MongoDBConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
+    extraction_llm: ExtractionLLMConfig = Field(default_factory=ExtractionLLMConfig)
 
 
 def load_settings(config_path: Path | str | None = None) -> Settings:
@@ -89,6 +126,17 @@ def load_settings(config_path: Path | str | None = None) -> Settings:
         data.setdefault("llm", {})["api_key"] = os.environ["GEMINI_API_KEY"]
     elif os.getenv("GROQ_API_KEY"):
         data.setdefault("llm", {})["api_key"] = os.environ["GROQ_API_KEY"]
+
+    # Extraction LLM overrides — master toggle and optional separate key
+    if os.getenv("EXTRACTION_LLM_ENABLED", "").lower() in ("1", "true", "yes"):
+        data.setdefault("extraction_llm", {})["enabled"] = True
+        data["extraction_llm"].setdefault("metadata_enabled", True)
+    if os.getenv("EXTRACTION_LLM_API_KEY"):
+        data.setdefault("extraction_llm", {})["api_key"] = os.environ["EXTRACTION_LLM_API_KEY"]
+    if os.getenv("EXTRACTION_LLM_BASE_URL"):
+        data.setdefault("extraction_llm", {})["base_url"] = os.environ["EXTRACTION_LLM_BASE_URL"]
+    if os.getenv("EXTRACTION_LLM_MODEL"):
+        data.setdefault("extraction_llm", {})["model"] = os.environ["EXTRACTION_LLM_MODEL"]
 
     return Settings(**data)
 

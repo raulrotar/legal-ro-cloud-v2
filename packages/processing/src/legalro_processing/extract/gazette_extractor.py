@@ -30,10 +30,21 @@ from legalro_processing.extract.structure import strip_structural
 from legalro_processing.extract.sumar import parse_sumar as _parse_sumar_entries, SumarBoundary
 from legalro_processing.extract.segment import segment_acts
 from legalro_processing.extract.metadata import extract_metadata
+from legalro_processing.extract.llm_extract import (
+    resolve_metadata,
+    resolve_segmentation,
+    resolve_metadata_vlm,
+)
 from legalro_processing.extract.gazette_schema import (
     GazetteDocument, LegalAct, SumarEntry, Article, Annex,
 )
 from legalro_core.models import Era
+
+try:
+    from legalro_processing.extract.roles import strip_letterspacing
+except ImportError:
+    def strip_letterspacing(text: str) -> str:  # type: ignore[misc]
+        return text
 
 EXTRACTION_VERSION = "1.0.0"
 
@@ -125,6 +136,20 @@ def extract_gazette(pdf_path: str | Path, settings=None) -> GazetteDocument:
         ]
         segmenter_input = rich_boundaries if rich_boundaries else _parse_sumar_entries(sumar_raw)
         raw_acts = segment_acts(pages, segmenter_input, era, expected_n=len(sumar_entries))
+
+        # ── Phase 2: LLM segmentation (SCANNED only) ─────────────────────────
+        # Try to improve act boundaries via LLM offsets.  Falls back to the
+        # regex segmentation above on any validation failure.
+        llm_seg = resolve_segmentation(
+            pages=pages,
+            sumar_entries=sumar_entries,
+            era=era,
+            gazette_year=year,
+            settings=settings,
+        )
+        if llm_seg is not None:
+            raw_acts = llm_seg
+            warnings.append(f"segmentation via LLM phase2: {len(raw_acts)} acts")
     else:
         # M2/M3 path: block-role pipeline (spec §3.2–§3.11).
         from legalro_processing.extract.blocks import (
@@ -157,10 +182,31 @@ def extract_gazette(pdf_path: str | Path, settings=None) -> GazetteDocument:
             warnings.append(f"over-segmentation: sumar={expected_n} acts, produced={produced_n}")
 
     acts: list[LegalAct] = []
+    _ecfg = getattr(settings, "extraction_llm", None) if settings else None
+    _vlm_active = (
+        _ecfg is not None
+        and _ecfg.enabled
+        and _ecfg.vlm_enabled
+        and era == Era.SCANNED
+    )
     for act_idx, raw_act in enumerate(raw_acts):
-        meta = extract_metadata(raw_act, year)
+        # ── Phase 1/3: resolve metadata (LLM or regex) ───────────────────────
+        # Phase 3 (VLM) takes priority over phase 1 (text-LLM) for SCANNED era
+        # when vlm_enabled=True; if VLM fails, falls back through phase 1 then
+        # regex.  For non-SCANNED eras only phase 1 is active.
+        meta = None
+        if _vlm_active:
+            meta = resolve_metadata_vlm(raw_act, year, str(path), settings)
+        if meta is None:
+            # Phase 1 (text LLM) or pure regex fallback
+            meta = resolve_metadata(raw_act, year, settings, era)
+
+        # Carry extraction_warnings from LLM routing into act warnings
+        _llm_warnings = meta.pop("extraction_warnings", [])
+
         meta["_gazette_issue_number"] = issue_number
         act = _build_act(act_idx, raw_act.text, meta, raw_act.page_range, year)
+        act.extraction_warnings.extend(_llm_warnings)
         acts.append(act)
 
     # ── Propagate metadata from parent acts to annexe acts ────────────
