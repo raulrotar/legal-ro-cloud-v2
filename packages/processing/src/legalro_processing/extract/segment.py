@@ -70,7 +70,38 @@ def segment_acts(
     # back to the whole gazette as one act (SCANNED era without reliable structure).
     if expected_n >= 2 and len(result) > expected_n * 3:
         return [RawAct(text=full_text, title="", page_range=[], position_in_gazette=0)]
+    result = _merge_mid_sentence_fragments(result)
     return result
+
+
+# Minimum length in characters for a standalone act chunk.  Acts shorter than
+# this are almost certainly OCR column-break artefacts (e.g. a two-column 1989
+# communiqué where the right column continues a sentence from the left column).
+_VERY_SHORT_ACT = 50
+
+
+def _merge_mid_sentence_fragments(raw_acts: list[RawAct]) -> list[RawAct]:
+    """Merge consecutive acts where one is a short column-break fragment.
+
+    Fixes two-column PDF layout issues in SCANNED-era documents (e.g. 1989 MOs)
+    where an OCR column boundary splits a sentence mid-word, producing a tiny
+    dangling act that embeds nonsensically as a standalone chunk.
+    """
+    if len(raw_acts) <= 1:
+        return raw_acts
+    merged = [raw_acts[0]]
+    for act in raw_acts[1:]:
+        if len(act.text.strip()) < _VERY_SHORT_ACT and merged:
+            prev = merged[-1]
+            merged[-1] = RawAct(
+                text=prev.text.rstrip() + "\n" + act.text,
+                title=prev.title or act.title,
+                page_range=prev.page_range,
+                position_in_gazette=prev.position_in_gazette,
+            )
+        else:
+            merged.append(act)
+    return merged
 
 
 def _sumar_degenerate(entries: list[SumarEntry], page_count: int = 0) -> bool:

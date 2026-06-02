@@ -14,6 +14,56 @@ if TYPE_CHECKING:
 ALINEAT_IN_PATH = re.compile(r'alin_(\d+)')
 LITERA_IN_PATH = re.compile(r'lit_([a-z])')
 
+# ── Monthly cotizații table restructuring ────────────────────────────────────
+# Party financing reports published in MO contain a 12-column monthly table
+# that LlamaParse flattens into unstructured text.  We detect this pattern and
+# prepend an explicit "luna X: value" block so the LLM can answer month-specific
+# questions correctly.
+
+_COTIZATII_TABLE_RE = re.compile(
+    r'cuantum\w*\s+total\s+al\s+cotiza[tț]iilor',
+    re.IGNORECASE | re.DOTALL,
+)
+_MONTHS_RO = [
+    'ianuarie', 'februarie', 'martie', 'aprilie', 'mai', 'iunie',
+    'iulie', 'august', 'septembrie', 'octombrie', 'noiembrie', 'decembrie',
+]
+
+
+def _restructure_cotizatii_table(text: str) -> str:
+    """Detect monthly party cotizatii table and prepend explicit month=value lines.
+
+    The OCR flattens the 12-column monthly table so column headers are garbled
+    and detached from values.  The numeric values DO appear in Jan-Dec order in
+    the linearised text; we extract them and prepend a structured label block.
+    """
+    if not _COTIZATII_TABLE_RE.search(text):
+        return text
+
+    # Data rows start with a row-number + org-name + 2+ spaces + numeric values.
+    # The 12 monthly values appear left-to-right in January-December order.
+    data_re = re.compile(
+        r'^\d+\s+\w[\w\s-]*?\s{2,}([\d.]+(?:\s+[\d.]+)*)',
+        re.MULTILINE,
+    )
+    rows = data_re.findall(text)
+    if not rows:
+        return text
+
+    total_m = re.search(r'[Cc]uantumul\s+total\s+([\d.,]+)', text)
+    total = total_m.group(1) if total_m else '?'
+
+    lines = ['STRUCTURA TABEL COTIZATII (valori lunare în lei):']
+    for row_str in rows:
+        nums = re.findall(r'[\d.]+', row_str)
+        monthly = (nums + ['0'] * 12)[:12]
+        for month, value in zip(_MONTHS_RO, monthly):
+            lines.append(f'  luna {month}: {value}')
+    lines.append(f'  Total anual: {total}')
+    lines.append('')  # blank separator before original OCR text
+
+    return '\n'.join(lines) + '\n' + text
+
 
 def run_ingestion(json_path: str | Path, settings: "Settings") -> dict:
     """Ingest a GazetteDocument JSON file into MongoDB.
@@ -71,7 +121,8 @@ def run_ingestion(json_path: str | Path, settings: "Settings") -> dict:
             continue
 
         try:
-            chunks = chunk_act(act.full_text, act.doc_type, act.issuing_authority)
+            act_text = _restructure_cotizatii_table(act.full_text)
+            chunks = chunk_act(act_text, act.doc_type, act.issuing_authority)
             if not chunks:
                 continue
 
