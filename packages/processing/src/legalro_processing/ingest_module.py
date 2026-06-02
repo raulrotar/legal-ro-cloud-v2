@@ -69,13 +69,13 @@ def _restructure_cotizatii_table(text: str) -> str:
     total_m = re.search(r'[Cc]uantumul\s+total\s+([\d.,]+)', text)
     total = total_m.group(1) if total_m else '?'
 
-    lines = ['STRUCTURA TABEL COTIZATII (valori lunare în lei):']
+    lines = ['STRUCTURA TABEL COTIZATII (valori lunare individuale, NU totalul anual):']
     for row_str in rows:
         nums = re.findall(r'[\d.]+', row_str)
         monthly = (nums + ['0'] * 12)[:12]
-        for month, value in zip(_MONTHS_RO, monthly):
-            lines.append(f'  luna {month}: {value}')
-    lines.append(f'  Total anual: {total}')
+        for i, (month, value) in enumerate(zip(_MONTHS_RO, monthly), start=1):
+            lines.append(f'  luna_{i}_{month} = {value}')
+    lines.append(f'  TOTAL_AN = {total}  (suma tuturor lunilor, NU valoarea unei luni)')
     lines.append('')  # blank separator before original OCR text
 
     return '\n'.join(lines) + '\n' + text

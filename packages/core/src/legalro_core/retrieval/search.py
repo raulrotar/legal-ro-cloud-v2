@@ -95,14 +95,16 @@ def hybrid_search(
     if act_type:
         vector_filter["document_type"] = act_type.upper()
 
+    meta = _parse_query_metadata(query)
+
     if settings.search.use_rank_fusion:
         results = _rank_fusion_search(db, query, query_embedding, vector_filter, settings)
+        return _apply_metadata_boost(results, meta)
     else:
-        results = _python_rrf_search(db, query, query_embedding, vector_filter, settings,
-                                     year_from=year_from, year_to=year_to)
-
-    meta = _parse_query_metadata(query)
-    return _apply_metadata_boost(results, meta)
+        # Pass meta into _python_rrf_search so the boost is applied BEFORE
+        # the top-N cutoff — chunks ranked just outside limit can be rescued.
+        return _python_rrf_search(db, query, query_embedding, vector_filter, settings,
+                                  year_from=year_from, year_to=year_to, meta=meta)
 
 
 def _python_rrf_search(
@@ -110,6 +112,7 @@ def _python_rrf_search(
     vector_filter: dict, settings: Settings,
     year_from: int | None = None,
     year_to: int | None = None,
+    meta: dict | None = None,
 ) -> list[dict]:
     vector_pipeline = [
         {
@@ -150,13 +153,14 @@ def _python_rrf_search(
         text_pipeline.insert(-1, {"$match": {"act_year": year_match}})
     text_results = list(db.chunks.aggregate(text_pipeline))
 
-    return _rrf_merge(vector_results, text_results, settings)
+    return _rrf_merge(vector_results, text_results, settings, meta=meta)
 
 
 def _rrf_merge(
     vector_results: list[dict],
     text_results: list[dict],
     settings: Settings,
+    meta: dict | None = None,
 ) -> list[dict]:
     k = settings.search.rrf_k
     scores: dict[str, float] = {}
@@ -171,6 +175,30 @@ def _rrf_merge(
         doc_id = str(doc["_id"])
         scores[doc_id] = scores.get(doc_id, 0) + settings.search.text_weight / (k + rank + 1)
         docs[doc_id] = doc
+
+    # Apply metadata boost to ALL candidates BEFORE the top-N cutoff so that
+    # a strong boost (e.g. exact MO+year match) can rescue chunks that would
+    # otherwise be eliminated at the search.limit boundary.
+    if meta:
+        mo_num = meta.get("mo_number")
+        mo_year = meta.get("mo_year")
+        act_num = meta.get("act_number")
+        act_year = meta.get("act_year")
+        for doc_id, doc in docs.items():
+            boost = 0.0
+            if act_num and str(doc.get("act_number", "")) == act_num:
+                boost += _METADATA_BOOST
+            if act_year and doc.get("act_year") == act_year:
+                boost += _METADATA_BOOST * 0.5
+            if mo_num:
+                issue = doc.get("source_issue_id", "")
+                if mo_year:
+                    if issue in (f"PI_{mo_num}_{mo_year}", f"PI_{mo_num}Bis_{mo_year}"):
+                        boost += _METADATA_BOOST * _MO_EXACT_MULTIPLIER
+                elif mo_num in issue:
+                    boost += _METADATA_BOOST
+            if boost:
+                scores[doc_id] = scores.get(doc_id, 0.0) + boost
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     result = []

@@ -118,7 +118,7 @@ QUESTIONS = [
     # ── TABLE VALUE — MO_PI_311_2026-04-20 ───────────────────────────────────
     ("Q55", "Care este cuantumul total al cotizațiilor primite în luna ianuarie, conform tabelului din MO nr. 311/20.IV.2026?",
              "conform tabelului din documentul publicat în MO nr. 311/2026"),
-    ("Q56", "Care este cuantumul total al cotizațiilor primite de Partidul Oltenilor în luna ianuarie din anul 2025, conform tabelului din MO nr. 311/20.IV.2026?",
+    ("Q56", "Care este cuantumul cotizațiilor primite de Partidul Oltenilor în luna ianuarie a anului 2025, conform tabelului din MO nr. 311/20.IV.2026?",
              "180"),
 ]
 
