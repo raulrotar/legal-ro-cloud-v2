@@ -33,22 +33,38 @@ _MONTHS_RO = [
 def _restructure_cotizatii_table(text: str) -> str:
     """Detect monthly party cotizatii table and prepend explicit month=value lines.
 
-    The OCR flattens the 12-column monthly table so column headers are garbled
-    and detached from values.  The numeric values DO appear in Jan-Dec order in
-    the linearised text; we extract them and prepend a structured label block.
+    LlamaParse may extract the 12-column monthly table in two formats:
+      - Horizontal: "1 Centru    180 830 300 ..." (one row per line)
+      - Vertical:   "1\\nCentru\\n180\\n830\\n300\\n..." (one cell per line)
+
+    In both cases the 12 monthly values appear in January-December order.
+    We extract them and prepend a structured label block so Gemini can answer
+    "luna X = Y" questions correctly without needing to count columns.
     """
     if not _COTIZATII_TABLE_RE.search(text):
         return text
 
-    # Data rows start with a row-number + org-name + 2+ spaces + numeric values.
-    # The 12 monthly values appear left-to-right in January-December order.
-    data_re = re.compile(
+    # Try horizontal format first: row_num + name + 2+spaces + space-sep numbers
+    horiz_re = re.compile(
         r'^\d+\s+\w[\w\s-]*?\s{2,}([\d.]+(?:\s+[\d.]+)*)',
         re.MULTILINE,
     )
-    rows = data_re.findall(text)
+    rows = horiz_re.findall(text)
+
     if not rows:
-        return text
+        # Try vertical format: row_num alone on a line, then org name, then one
+        # number per line for each of 12 months.
+        # Pattern: digit-only line, then a name line, then 12 number-only lines.
+        vert_re = re.compile(
+            r'(?:^|\n)(\d+)\n([^\n\d][^\n]*)\n'   # row_num \n org_name \n
+            r'((?:[\d.]+\n){1,12})',               # 1–12 number lines
+            re.MULTILINE,
+        )
+        vert_rows = vert_re.findall(text)
+        if not vert_rows:
+            return text
+        # vert_rows: list of (row_num, org_name, values_block)
+        rows = [vb for _, _, vb in vert_rows]  # keep just the numbers block
 
     total_m = re.search(r'[Cc]uantumul\s+total\s+([\d.,]+)', text)
     total = total_m.group(1) if total_m else '?'

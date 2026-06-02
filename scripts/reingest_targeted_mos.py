@@ -85,7 +85,7 @@ def reextract_and_reingest(source_issue_id: str, pdf_path: str, label: str, sett
 
     # Locate and delete cached JSON so run_extraction re-OCRs
     pdf_full = root / pdf_path
-    json_path = _expected_json_path(str(pdf_full), extracted_dir)
+    json_path = _expected_json_path(pdf_full, extracted_dir)
     if json_path and json_path.exists():
         gazette = load_gazette(json_path)
         db.gazettes.delete_many({"sha256": gazette.sha256})
