@@ -72,7 +72,7 @@ QUESTIONS = [
              "Comunicatul Consiliului Frontului Salvării Naționale"),
     ("Q33", "Ce organ era chemat să asigure ordinea publică împreună cu comitetele cetățenești, conform comunicatului FSN publicat în MO nr. 1/22.XII.1989?",
              "Miliția"),
-    ("Q34", "Ce mesaj a transmis Consiliul Frontului Salvării Naționale în comunicatul din 25 decembrie 1989, publicat în MO nr. 2/1989?",
+    ("Q34", "Ce a declarat FSN privind revoluția în comunicatul din 25 decembrie 1989, publicat în MO nr. 2/1989?",
              "Revoluția a învins"),
     ("Q35", "Ce s-a hotărât în comunicatul FSN din 25 decembrie 1989 privind Ministerul de Interne, publicat în MO nr. 2/1989?",
              "Unitățile Ministerului de Interne se vor integra Ministerului Apărării Naționale"),

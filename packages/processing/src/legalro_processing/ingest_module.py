@@ -78,7 +78,17 @@ def _restructure_cotizatii_table(text: str) -> str:
     lines.append(f'  TOTAL_AN = {total}  (suma tuturor lunilor, NU valoarea unei luni)')
     lines.append('')  # blank separator before original OCR text
 
-    return '\n'.join(lines) + '\n' + text
+    # Remove the ambiguous "Cuantumul total\nN.NNN" row from the raw OCR so
+    # Gemini does not confuse the annual grand total with a monthly value.
+    # The annual total is already clearly labelled in the structured block above.
+    text_cleaned = re.sub(
+        r'Cuantumul\s+total\s*\n\s*([\d.,]+)',
+        r'(total anual deja indicat mai sus: \1)',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    return '\n'.join(lines) + '\n' + text_cleaned
 
 
 def run_ingestion(json_path: str | Path, settings: "Settings") -> dict:
