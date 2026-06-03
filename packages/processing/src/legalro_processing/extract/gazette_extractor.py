@@ -109,6 +109,45 @@ def extract_gazette(pdf_path: str | Path, settings=None) -> GazetteDocument:
 
     era = detect_era(str(path))
 
+    # ── Option C: Docling→MD→LLM→JSON pipeline ───────────────────────
+    # Activated when extraction_llm.enabled=True AND mode="md_llm".
+    # Falls back to the standard pipeline below on any failure.
+    _ecfg = getattr(settings, "extraction_llm", None) if settings else None
+    if _ecfg and _ecfg.enabled and getattr(_ecfg, "mode", "metadata_only") == "md_llm":
+        # Parse sumar first (needed by Option C for act-count reconciliation)
+        doc_fitz2 = fitz.open(str(path))
+        cover_text_c = doc_fitz2[0].get_text("text") if len(doc_fitz2) > 0 else ""
+        page_heights = [doc_fitz2[i].rect.height for i in range(len(doc_fitz2))]
+        doc_fitz2.close()
+        sumar_raw = normalize_pages([cover_text_c], era)[0] if cover_text_c else ""
+        sumar_entries = _build_sumar(sumar_raw, warnings, era=era)
+        year_label, weekday = _parse_header(sumar_raw)
+        sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+
+        try:
+            from legalro_processing.extract.pipeline import run as _option_c_run
+            return _option_c_run(
+                pdf_path=path,
+                settings=settings,
+                gazette_year=year,
+                issue_number=issue_number,
+                gazette_id=gazette_id,
+                era=era,
+                sumar_entries=sumar_entries,
+                pdf_page_count=pdf_page_count,
+                sha256=sha256,
+                issue_date=issue_date,
+                part=part,
+                is_bis=is_bis,
+                year_label=year_label,
+                weekday=weekday,
+                sumar_raw=sumar_raw,
+                warnings=warnings,
+            )
+        except Exception as exc:
+            warnings.append(f"Option C pipeline failed: {exc}; using standard pipeline")
+            # Fall through to the standard pipeline below
+
     # ── Sumar (cover page) — text-based parser for all eras ──────────
     # We always parse sumar from page-0 raw text; the block pipeline handles body pages.
     doc_fitz2 = fitz.open(str(path))

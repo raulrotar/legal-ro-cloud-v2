@@ -29,14 +29,20 @@ class ExtractionLLMConfig(BaseSettings):
          comes from OCR.  Requires a vision-capable ``model``.
     """
     enabled: bool = False               # master toggle — default OFF = exact legacy behaviour
+    # ── Option B: metadata-only mode ─────────────────────────────────────────
     metadata_enabled: bool = False      # phase 1: LLM metadata extraction
     segmentation_enabled: bool = False  # phase 2: LLM segmentation via offsets
     vlm_enabled: bool = False           # phase 3: VLM on page images (SCANNED only)
+    # ── Option C: Docling→MD→LLM→JSON mode ───────────────────────────────────
+    mode: str = "metadata_only"         # "metadata_only" (B) | "md_llm" (C)
+    md_cache_dir: str = "md_cache"      # where to save/load intermediate .md files
+    edit_distance_threshold: float = 0.15  # hallucination guard: max allowed edit ratio
+    # ── Shared provider config ────────────────────────────────────────────────
     base_url: str = ""                  # empty → inherit Settings.llm.base_url
     model: str = ""                     # empty → inherit Settings.llm.model
     api_key: str = Field(default="", alias="api_key")
     temperature: float = 0.0           # 0.0 recommended for structured extraction
-    max_tokens: int = 1024
+    max_tokens: int = 2048
     max_retries: int = 2
 
 

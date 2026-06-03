@@ -38,11 +38,18 @@ search:
 # EXTRACTION_LLM_API_KEY env var (or GEMINI_API_KEY which is auto-inherited).
 extraction_llm:
   enabled: true
+  # ── Option B (metadata only, current default) ─────────────────────────────
+  mode: "metadata_only"        # switch to "md_llm" to activate Option C
   metadata_enabled: true       # phase 1: LLM extracts doc_type, title, authority, number
   segmentation_enabled: false  # phase 2: LLM segmentation (SCANNED era only)
   vlm_enabled: false           # phase 3: vision model on page images (SCANNED only)
-  base_url: ""                 # empty → uses llm.base_url (local MLX: http://localhost:8080/v1)
-  model: ""                    # empty → uses llm.model (mlx-community/Qwen3.5-9B-4bit)
+  # ── Option C (Docling→MD→LLM→JSON) ──────────────────────────────────────
+  # mode: "md_llm"
+  md_cache_dir: "md_cache"            # intermediate .md files (human-inspectable)
+  edit_distance_threshold: 0.15       # max allowed edit ratio for LLM body-text correction
+  # ── Provider (empty = inherit from llm: block above) ─────────────────────
+  base_url: ""                 # local MLX: http://localhost:8080/v1
+  model: ""                    # e.g. "numind/NuExtract3" for Option C, or inherit
   temperature: 0.0
-  max_tokens: 1024
+  max_tokens: 2048
   max_retries: 2

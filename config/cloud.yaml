@@ -44,12 +44,19 @@ search:
 # On cloud: inherits llm.base_url + model (Gemini) and GEMINI_API_KEY.
 # api_key is set via GEMINI_API_KEY env var — do not hardcode here.
 extraction_llm:
-  enabled: false               # flip to true when running extraction on cloud
-  metadata_enabled: true       # phase 1: doc_type, title, authority, number
-  segmentation_enabled: false  # phase 2: act boundary segmentation (SCANNED only)
-  vlm_enabled: false           # phase 3: vision model on page images (SCANNED only)
-  base_url: ""                 # empty → uses llm.base_url (Gemini)
-  model: ""                    # empty → uses llm.model (gemini-3.1-flash-lite)
+  enabled: false               # flip to true to activate
+  # ── Option B (metadata only) ──────────────────────────────────────────────
+  mode: "metadata_only"        # switch to "md_llm" for Option C
+  metadata_enabled: true
+  segmentation_enabled: false
+  vlm_enabled: false
+  # ── Option C (Docling→MD→LLM→JSON) ──────────────────────────────────────
+  # mode: "md_llm"
+  md_cache_dir: "md_cache"
+  edit_distance_threshold: 0.15
+  # ── Provider (empty = inherit from llm: block — Gemini) ──────────────────
+  base_url: ""
+  model: ""                    # e.g. "numind/NuExtract3" via vLLM on VPS
   temperature: 0.0
-  max_tokens: 1024
+  max_tokens: 2048
   max_retries: 2
