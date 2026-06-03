@@ -72,8 +72,8 @@ _DECIZIE_HEADER_NR = re.compile(
 # Abrogation: "Ordinul/Decizia/Hotărârea nr. NNN/YYYY ... se abrogă"
 # or "se abrogă ... nr. NNN/YYYY"
 _ABROGATION_NR = re.compile(
-    r'[Nn][Rr]\.\s*([\d.]+)/(\d{4})\b[^.]{0,200}se\s+abroag[ăa]'
-    r'|se\s+abroag[ăa][^.]{0,200}[Nn][Rr]\.\s*([\d.]+)/(\d{4})\b',
+    r'[Nn][Rr]\.\s*([\d.]+)/(\d{4})\b.{0,400}?se\s+abrog[ăa]'
+    r'|se\s+abrog[ăa].{0,400}?[Nn][Rr]\.\s*([\d.]+)/(\d{4})\b',
     re.IGNORECASE | re.DOTALL,
 )
 

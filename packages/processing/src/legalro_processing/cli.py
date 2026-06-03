@@ -273,5 +273,180 @@ def _wait_for_indexes(database, timeout: int = 120) -> None:
     typer.echo("[setup-indexes] timed out — indexes may still be building (check Atlas UI)")
 
 
+@app.command()
+def validate_extractions(
+    extracted_dir: Path = typer.Option(Path("extracted"), help="Directory of GazetteDocument JSONs to validate."),
+    laws_dir: Path = typer.Option(Path("laws"), help="PDF source directory (for re-extraction)."),
+    out: Path = typer.Option(Path("out"), help="Bundle output root (for re-extraction)."),
+    config: str = typer.Option(None, help="Path to a config yaml."),
+    reextract: bool = typer.Option(False, "--reextract", help="Re-extract files with ERROR-level issues."),
+    embed: bool = typer.Option(True, help="Compute embeddings during re-extraction."),
+    severity: str = typer.Option("WARNING", help="Minimum severity to report: ERROR, WARNING, INFO."),
+    report: Path = typer.Option(None, help="Write JSON report to this path."),
+):
+    """Validate extracted JSONs and optionally re-extract files with issues.
+
+    Scans every GazetteDocument JSON under --extracted-dir, runs quality
+    checks, and prints a report.  With --reextract, files with ERROR-level
+    issues are deleted and re-extracted from the original PDF using the
+    current pipeline (including the draft-then-verify LLM stage).
+
+    Example — validate only:
+      legalro-process validate-extractions --extracted-dir extracted_llama31_full/
+
+    Example — validate + auto-fix:
+      legalro-process validate-extractions \\
+        --extracted-dir extracted_llama31_full/ \\
+        --laws-dir laws/ \\
+        --out bundle_llama31/ \\
+        --reextract \\
+        --config config/local.yaml
+    """
+    import os
+    from legalro_processing.extraction_validator import (
+        validate_directory, needs_reextraction, group_by_file, Severity,
+    )
+
+    min_sev = Severity(severity.upper())
+    sev_order = {Severity.ERROR: 0, Severity.WARNING: 1, Severity.INFO: 2}
+    min_sev_rank = sev_order[min_sev]
+
+    typer.echo(f"[validate] scanning {extracted_dir} …")
+    all_issues = validate_directory(extracted_dir)
+
+    # Filter by minimum severity
+    shown = [i for i in all_issues if sev_order[i.severity] <= min_sev_rank]
+
+    # Print report
+    by_file = group_by_file(shown)
+    errors = [i for i in all_issues if i.severity == Severity.ERROR]
+    warnings = [i for i in all_issues if i.severity == Severity.WARNING]
+    infos = [i for i in all_issues if i.severity == Severity.INFO]
+
+    typer.echo(f"\n{'='*60}")
+    typer.echo(f"Validation summary — {len(all_issues)} issues across "
+               f"{len(group_by_file(all_issues))} files")
+    typer.echo(f"  ERROR: {len(errors)}  WARNING: {len(warnings)}  INFO: {len(infos)}")
+    typer.echo(f"{'='*60}\n")
+
+    for json_path, file_issues in sorted(by_file.items()):
+        gazette_id = file_issues[0].gazette_id
+        has_error  = any(i.severity == Severity.ERROR for i in file_issues)
+        marker = "❌" if has_error else "⚠️ "
+        typer.echo(f"{marker} {gazette_id}  ({json_path})")
+        for issue in file_issues:
+            act_tag = f"act[{issue.act_index}]" if issue.act_index is not None else "gazette"
+            typer.echo(f"    [{issue.severity.value:7}] {issue.check:28} {act_tag}: {issue.message}")
+        typer.echo("")
+
+    # JSON report
+    if report:
+        report_data = [
+            {
+                "check":      i.check,
+                "severity":   i.severity.value,
+                "gazette_id": i.gazette_id,
+                "json_path":  str(i.json_path),
+                "act_index":  i.act_index,
+                "act_number": i.act_number,
+                "doc_type":   i.doc_type,
+                "message":    i.message,
+            }
+            for i in all_issues
+        ]
+        report.write_text(json.dumps(report_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        typer.echo(f"[validate] report written to {report}")
+
+    # Re-extraction
+    if not reextract:
+        error_files = {i.json_path for i in errors}
+        if error_files:
+            typer.echo(f"[validate] {len(error_files)} file(s) with ERROR-level issues. "
+                       f"Run with --reextract to fix them.")
+        return
+
+    # Identify files to re-extract (ERROR-level issues only)
+    error_file_issues = {
+        json_path: file_issues
+        for json_path, file_issues in group_by_file(all_issues).items()
+        if any(i.severity == Severity.ERROR for i in file_issues)
+    }
+    if not error_file_issues:
+        typer.echo("[validate] no ERROR-level issues — nothing to re-extract.")
+        return
+
+    from legalro_core.config import load_settings
+    from legalro_processing.extract_module import run_extraction
+    from legalro_processing.extract.gazette_extractor import load_gazette
+    from legalro_processing.prepare.build import build_issue_docs
+    from legalro_processing.bundle_writer import emit_doc
+
+    settings = load_settings(config)
+    out.mkdir(parents=True, exist_ok=True)
+
+    typer.echo(f"\n[validate] re-extracting {len(error_file_issues)} file(s) …\n")
+    ok = failed = 0
+    for json_path, file_issues in error_file_issues.items():
+        gazette_id = file_issues[0].gazette_id
+
+        # Find the original PDF — mirror the extracted path back to laws/
+        pdf_path = _find_source_pdf(json_path, extracted_dir, laws_dir)
+        if pdf_path is None:
+            typer.echo(f"  SKIP {gazette_id}: source PDF not found under {laws_dir}")
+            failed += 1
+            continue
+
+        issues_summary = ", ".join(
+            f"{i.check}(act[{i.act_index}])" for i in file_issues if i.severity == Severity.ERROR
+        )
+        typer.echo(f"  re-extracting {gazette_id}  issues: {issues_summary}")
+
+        try:
+            # Delete stale JSON so run_extraction re-extracts it
+            json_path.unlink(missing_ok=True)
+            new_json_path = run_extraction(pdf_path, settings, extracted_dir=extracted_dir)
+
+            # Validate the freshly extracted file
+            fresh_issues = [
+                i for i in validate_directory(extracted_dir)  # scoped to this file only
+                if i.json_path == new_json_path and i.severity == Severity.ERROR
+            ]
+
+            # Rebuild bundle slice
+            gazette = load_gazette(new_json_path)
+            issue_id, sha, gazette_doc, chunks, coverage = build_issue_docs(
+                gazette, pdf_path, settings, embed=embed
+            )
+            emit_doc(out, issue_id, sha, coverage, gazette_doc, chunks, gzip_chunks=True)
+
+            remaining = len(fresh_issues)
+            status = "✓ fixed" if remaining == 0 else f"⚠ {remaining} ERROR(s) remain"
+            typer.echo(f"    {status}  ({len(chunks)} chunks, coverage={coverage:.3f})")
+            ok += 1
+        except Exception as exc:
+            typer.echo(f"    FAILED: {exc}")
+            failed += 1
+
+    typer.echo(f"\n[validate] re-extraction done: {ok} ok, {failed} failed")
+
+
+def _find_source_pdf(json_path: Path, extracted_dir: Path, laws_dir: Path) -> Path | None:
+    """Map an extracted JSON path back to the source PDF under laws_dir."""
+    try:
+        # extracted/2007/12/03/MO_PI_820_2007-12-03.json
+        # → laws/2007/12/03/MO_PI_820_2007-12-03.pdf
+        rel = json_path.relative_to(extracted_dir)
+        candidate = laws_dir / rel.with_suffix(".pdf")
+        if candidate.exists():
+            return candidate
+    except ValueError:
+        pass
+
+    # Fallback: search by filename
+    stem = json_path.stem  # e.g. MO_PI_820_2007-12-03
+    matches = list(laws_dir.rglob(f"{stem}.pdf"))
+    return matches[0] if matches else None
+
+
 if __name__ == "__main__":
     app()
