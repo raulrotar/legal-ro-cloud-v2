@@ -25,11 +25,13 @@ laws/
 .claude/
 reports/
 
-#extraction
-extracted_nuextract/
-extracted_nuextract_test/
-extracted_option_c/
-extracted_qwen9b/
-extracted_qwen14b/
-extracted_llama31/
-extracted_llm/
+# extraction outputs (local runs; never committed)
+extracted/
+extracted_*/
+
+# Docling markdown cache (large; regenerated on-demand)
+md_cache/
+
+# Stage A bundles (embeddings + chunks; loaded into MongoDB, not versioned)
+bundle_*/
+out/
