@@ -44,7 +44,7 @@ extraction_llm:
   md_cache_dir: "md_cache"            # intermediate .md files (human-inspectable)
   edit_distance_threshold: 0.15       # max allowed edit ratio for LLM body-text correction
   base_url: ""                        # inherits http://localhost:8080/v1
-  model: ""   # inherits llm.model above (Qwen3.5-9B-4bit via mlx_lm.server)
+  model: "numind/NuExtract3-mlx-mxfp8"   # NuExtract 3 MLX fp8 — best for structured extraction on M-series
   temperature: 0.0
   max_tokens: 2048
   max_retries: 2
