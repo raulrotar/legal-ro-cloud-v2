@@ -136,6 +136,73 @@ Extrage metadatele și returnează JSON.
 """
 
 
+# ── NuExtract 3 template (used when model name contains "nuextract3") ─────────
+# NuExtract 3 uses a JSON schema template passed via extra_body.chat_template_kwargs
+# instead of a system prompt. Works with vLLM; mlx_lm.server uses standard prompts.
+
+_NUEXTRACT3_TEMPLATE = {
+    "doc_type": ["LEGE", "HG", "OUG", "ORDONANȚĂ", "DECRET", "DECRET_LEGE",
+                 "DCC", "DECIZIE", "ORDIN", "COMUNICAT", "RAPORT", "ANUNT",
+                 "RECTIFICARE", "UNKNOWN"],
+    "act_number": "verbatim-string",
+    "act_year": "integer",
+    "issuing_authority": "string",
+    "title": "string",
+    "locality": "string",
+    "full_text_corrected": "verbatim-string",
+}
+
+_NUEXTRACT3_INSTRUCTIONS = (
+    "Extrage câmpurile din actul normativ românesc. "
+    "doc_type: tipul actului (HG=Hotărâre Guvern, DCC=Decizie Curtea Constituțională). "
+    "act_number: numărul din 'Nr. NNN.' la final, doar cifre. "
+    "act_year: anul din 'București, ZZ LUNA AAAA.'. "
+    "issuing_authority: instituția emitentă completă. "
+    "title: titlul descriptiv (fără '......'). "
+    "locality: județul menționat sau null. "
+    "full_text_corrected: corpul actului cu corecții minime OCR (diacritice, mojibake). "
+    "NU reformula, NU rezuma."
+)
+
+
+def _is_nuextract3(model: str) -> bool:
+    return "nuextract3" in model.lower() or "nuextract-3" in model.lower()
+
+
+def _nuextract3_call(block: MdActBlock, gazette_year: int, cfg: dict) -> str:
+    """Call NuExtract 3 via vLLM using its native template format."""
+    text = block.markdown
+    head = text[:2500] if len(text) > 2500 else text
+    tail = text[-800:] if len(text) > 3300 else ""
+    doc_text = f"Gazette year: {gazette_year}\n\n{head}"
+    if tail:
+        doc_text += f"\n--- ... ---\n{tail}"
+
+    return call_llm(
+        messages=[
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": doc_text}],
+            }
+        ],
+        base_url=cfg["base_url"],
+        model=cfg["model"],
+        api_key=cfg["api_key"],
+        temperature=cfg["temperature"],
+        max_tokens=cfg["max_tokens"],
+        json_mode=False,
+        timeout=120.0,
+        max_retries=cfg["max_retries"],
+        extra_body={
+            "chat_template_kwargs": {
+                "template": json.dumps(_NUEXTRACT3_TEMPLATE),
+                "instructions": _NUEXTRACT3_INSTRUCTIONS,
+                "enable_thinking": False,
+            }
+        },
+    )
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def structure_act(
@@ -180,20 +247,23 @@ def structure_act(
 
     cfg = _effective_config(settings)
     try:
-        raw_json = call_llm(
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user",   "content": user_msg},
-            ],
-            base_url=cfg["base_url"],
-            model=cfg["model"],
-            api_key=cfg["api_key"],
-            temperature=cfg["temperature"],
-            max_tokens=cfg["max_tokens"],
-            json_mode=True,
-            timeout=90.0,
-            max_retries=cfg["max_retries"],
-        )
+        if _is_nuextract3(cfg["model"]):
+            raw_json = _nuextract3_call(block, gazette_year, cfg)
+        else:
+            raw_json = call_llm(
+                messages=[
+                    {"role": "system", "content": _SYSTEM},
+                    {"role": "user",   "content": user_msg},
+                ],
+                base_url=cfg["base_url"],
+                model=cfg["model"],
+                api_key=cfg["api_key"],
+                temperature=cfg["temperature"],
+                max_tokens=cfg["max_tokens"],
+                json_mode=True,
+                timeout=90.0,
+                max_retries=cfg["max_retries"],
+            )
         data = json.loads(raw_json)
         dto = ActExtractionLLM(**data)
     except (Exception, ValidationError) as exc:

@@ -64,13 +64,13 @@ def _extract_docling_md(pdf_path: str, era: Era) -> str:
 
     opts = PdfPipelineOptions()
 
-    # Force CPU: MPS (Apple Silicon) doesn't support float64 which RT-DETRv2 requires.
-    # On CUDA VPS this is overridden automatically by Docling's device detection.
+    # MPS acceleration is supported since Docling v2.33.0 (float64 bug fixed).
+    # AUTO lets Docling pick MPS on Apple Silicon, CUDA on Linux VPS, CPU elsewhere.
     from docling.datamodel.pipeline_options import AcceleratorOptions
     from docling.datamodel.accelerator_options import AcceleratorDevice
     opts.accelerator_options = AcceleratorOptions(
         num_threads=4,
-        device=AcceleratorDevice.CPU,
+        device=AcceleratorDevice.AUTO,
     )
 
     # ── Resource discipline ───────────────────────────────────────────────────

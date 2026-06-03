@@ -24,6 +24,7 @@ def call_llm(
     json_mode: bool = False,
     timeout: float = 60.0,
     max_retries: int = 2,
+    extra_body: dict[str, Any] | None = None,
 ) -> str:
     """Call an OpenAI-compatible /chat/completions endpoint.
 
@@ -76,6 +77,8 @@ def call_llm(
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    if extra_body:
+        payload.update(extra_body)
 
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):

@@ -31,25 +31,20 @@ search:
   parent_doc_top_n: 3
   max_parent_chars: 8000
 
-# ── LLM-based extraction (Option B) ──────────────────────────────────────────
-# Set enabled: true to activate.  Phases are independent toggles.
-# When base_url/model are empty, inherits from llm: above (local MLX server).
-# For cloud Gemini, set base_url + model explicitly and set api_key via
-# EXTRACTION_LLM_API_KEY env var (or GEMINI_API_KEY which is auto-inherited).
+# ── LLM-based extraction (Option C: Docling→MD→LLM→JSON) ────────────────────
+# base_url is empty → inherits from llm.base_url above (http://localhost:8080/v1)
+# Start the server first:
+#   mlx_lm.server --model numind/NuExtract3-mlx-mxfp8 --port 8080
 extraction_llm:
   enabled: true
-  # ── Option B (metadata only, current default) ─────────────────────────────
-  mode: "metadata_only"        # switch to "md_llm" to activate Option C
-  metadata_enabled: true       # phase 1: LLM extracts doc_type, title, authority, number
-  segmentation_enabled: false  # phase 2: LLM segmentation (SCANNED era only)
-  vlm_enabled: false           # phase 3: vision model on page images (SCANNED only)
-  # ── Option C (Docling→MD→LLM→JSON) ──────────────────────────────────────
-  # mode: "md_llm"
+  mode: "md_llm"                      # Option C pipeline
+  metadata_enabled: true
+  segmentation_enabled: false
+  vlm_enabled: false
   md_cache_dir: "md_cache"            # intermediate .md files (human-inspectable)
   edit_distance_threshold: 0.15       # max allowed edit ratio for LLM body-text correction
-  # ── Provider (empty = inherit from llm: block above) ─────────────────────
-  base_url: ""                 # local MLX: http://localhost:8080/v1
-  model: ""                    # e.g. "numind/NuExtract3" for Option C, or inherit
+  base_url: ""                        # inherits http://localhost:8080/v1
+  model: ""   # inherits llm.model above (Qwen3.5-9B-4bit via mlx_lm.server)
   temperature: 0.0
   max_tokens: 2048
   max_retries: 2
