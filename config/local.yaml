@@ -48,3 +48,12 @@ extraction_llm:
   temperature: 0.0
   max_tokens: 4096   # raised from 2048 — long ORDINs were truncating mid-JSON
   max_retries: 2
+  # ── Fallback model for validation-triggered retries ──────────────────────
+  # When validation finds ERROR-level issues (wrong act_number, UNKNOWN type,
+  # etc.) extraction is retried with this model.  Leave fallback_model empty
+  # to retry with the same model.
+  # Example: switch to a larger/more capable model for hard cases.
+  fallback_model: "numind/NuExtract3-mlx-mxfp8"
+  fallback_base_url: ""               # empty → same as base_url (http://localhost:8080/v1)
+  fallback_api_key: ""
+  fallback_max_tokens: 0              # 0 → same as max_tokens

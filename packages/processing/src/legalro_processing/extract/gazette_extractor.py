@@ -124,6 +124,24 @@ def extract_gazette(pdf_path: str | Path, settings=None) -> GazetteDocument:
         year_label, weekday = _parse_header(sumar_raw)
         sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
 
+        # Fallback: if fitz-based sumar parsing failed (0 entries), try parsing
+        # from the Docling markdown which has clean tables for scanned-era PDFs.
+        if not sumar_entries:
+            try:
+                from legalro_processing.extract import md_cache
+                _ecfg2 = getattr(settings, "extraction_llm", None) if settings else None
+                _md_dir = getattr(_ecfg2, "md_cache_dir", "md_cache") if _ecfg2 else "md_cache"
+                cached_md = md_cache.load(path, _md_dir)
+                if cached_md:
+                    md_entries = _build_sumar_from_md(cached_md, [])
+                    if md_entries:
+                        # Remove the "produced 0 entries" warning added above
+                        warnings[:] = [w for w in warnings if "Sumar parsing produced 0 entries" not in w]
+                        sumar_entries = md_entries
+                        warnings.append(f"Sumar parsed from markdown table: {len(md_entries)} entries")
+            except Exception:
+                pass  # non-critical; extraction continues without sumar hints
+
         try:
             from legalro_processing.extract.pipeline import run as _option_c_run
             return _option_c_run(
@@ -513,6 +531,96 @@ def _build_sumar(sumar_text: str, warnings: list[str], era: Era = Era.MODERN) ->
 
     if not entries:
         warnings.append("Sumar parsing produced 0 entries — may be SCANNED era or unusual layout")
+
+    return entries
+
+
+def _build_sumar_from_md(md_text: str, warnings: list[str]) -> list[SumarEntry]:
+    """
+    Parse sumar entries from a Docling markdown table (scanned-era fallback).
+
+    Handles two table layouts found in 1989 gazettes:
+      3-col: | Nr. | Title | Page |   (categories appear as full-row cells)
+      2-col: | Title | Page |         (no act number, category in separate row)
+    """
+    # Find the SUMAR section in the markdown
+    sumar_m = re.search(r'#\s*SUMAR', md_text, re.IGNORECASE)
+    if not sumar_m:
+        return []
+
+    # Take text from SUMAR heading until the next H1/H2 heading
+    after_sumar = md_text[sumar_m.end():]
+    next_heading = re.search(r'\n#+ ', after_sumar)
+    table_region = after_sumar[:next_heading.start()] if next_heading else after_sumar
+
+    # Extract pipe-table rows (skip separator rows with only dashes)
+    row_re = re.compile(r'^\|(.+)\|$', re.MULTILINE)
+    entries: list[SumarEntry] = []
+    current_category = ""
+
+    for row_m in row_re.finditer(table_region):
+        cells = [c.strip() for c in row_m.group(1).split('|')]
+        # Skip separator rows (all cells are dashes/spaces)
+        if all(re.fullmatch(r'[-: ]+', c) for c in cells if c):
+            continue
+        # Skip header rows (first cell is "Nr.", or any cell is "Pagina")
+        first = cells[0] if cells else ""
+        if re.fullmatch(r'Nr\.?', first, re.IGNORECASE):
+            continue
+        if any(re.fullmatch(r'Pagina', c, re.IGNORECASE) for c in cells):
+            continue
+
+        non_empty = [c for c in cells if c]
+        if not non_empty:
+            continue
+
+        # Detect category row: single non-empty cell that looks like an act-type header
+        # (all-caps word, no digits except "1989" style years)
+        if len(non_empty) == 1 or (len(non_empty) >= 1 and not any(c for c in non_empty[1:] if c)):
+            candidate = non_empty[0]
+            if re.match(r'^[A-ZĂÎÂȘȚŞŢ][A-ZĂÎÂȘȚŞŢ\s\-]+$', candidate) and len(candidate) > 2:
+                current_category = candidate
+                continue
+
+        # Act number is first cell if it matches "N." or "N" (digits + optional dot)
+        act_num = ""
+        title = ""
+        page_raw = ""
+        if len(cells) >= 3:
+            act_num_cell = cells[0]
+            if re.fullmatch(r'\d+\.?', act_num_cell):
+                act_num = act_num_cell.rstrip('.')
+                title = cells[1]
+                page_raw = cells[2] if len(cells) > 2 else ""
+            else:
+                # Category-as-first-cell with title and page
+                title = cells[0]
+                page_raw = cells[-1]
+        elif len(cells) == 2:
+            title = cells[0]
+            page_raw = cells[1]
+        else:
+            title = cells[0] if cells else ""
+
+        title = title.strip()
+        if not title:
+            continue
+
+        # Parse page number (may be "1", "1-2", "1—2", missing)
+        page_start = 0
+        if page_raw:
+            page_m = re.search(r'(\d+)', page_raw)
+            if page_m:
+                page_start = int(page_m.group(1))
+
+        entries.append(SumarEntry(
+            act_number=act_num,
+            doc_type=_infer_doc_type(title, act_num),
+            title=title,
+            page_start=page_start,
+            page_end=None,
+            category=current_category,
+        ))
 
     return entries
 

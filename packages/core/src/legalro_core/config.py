@@ -44,6 +44,15 @@ class ExtractionLLMConfig(BaseSettings):
     temperature: float = 0.0           # 0.0 recommended for structured extraction
     max_tokens: int = 2048
     max_retries: int = 2
+    # ── Fallback model (used on validation-triggered retries) ─────────────────
+    # When validation finds ERROR-level issues after the primary extraction,
+    # the pipeline retries using the fallback model instead of the same one.
+    # Leave all fallback fields empty to retry with the same model (default).
+    # Example: primary = Gemini (fast), fallback = local Llama 3.1 (thorough).
+    fallback_base_url: str = ""         # empty → same as base_url
+    fallback_model: str = ""            # empty → same as model (no escalation)
+    fallback_api_key: str = Field(default="", alias="fallback_api_key")
+    fallback_max_tokens: int = 0        # 0 → same as max_tokens
 
 
 class LLMConfig(BaseSettings):
