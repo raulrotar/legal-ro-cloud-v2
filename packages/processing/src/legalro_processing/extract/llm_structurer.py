@@ -34,7 +34,7 @@ from typing import Literal, Optional, Any
 
 from pydantic import BaseModel, ValidationError, field_validator
 
-from legalro_core.llm_client import call_llm
+from legalro_core.llm_client import call_llm, loads_lenient
 from legalro_processing.extract.metadata import (
     AUTHORITY_PATTERNS,
     CLOSING_BLOCK,
@@ -50,29 +50,64 @@ _DOC_TYPE_SET = {
     "DECIZIE", "ORDIN", "COMUNICAT", "RAPORT", "ANUNT", "RECTIFICARE", "UNKNOWN",
 }
 
+# Romanian act-type words → canonical enum tag.
+# Applied BEFORE Pydantic validation so a stray "HOTĂRÂRE" doesn't trigger
+# a silent regex fallback (the validator raises on any non-enum value).
+_DOC_TYPE_ALIASES: dict[str, str] = {
+    "HOTĂRÂRE": "HG",
+    "HOTARARE": "HG",
+    "HOTĂRÂREA": "HG",
+    "HOTĂRÂRE DE GUVERN": "HG",
+    "ORDONANȚĂ DE URGENȚĂ": "OUG",
+    "ORDONANTA DE URGENTA": "OUG",
+    "ORDONANTA": "ORDONANȚĂ",
+    "DECRET-LEGE": "DECRET_LEGE",
+    "DECRET LEGE": "DECRET_LEGE",
+    "DECIZIE A CURȚII CONSTITUȚIONALE": "DCC",
+    "DECIZIA CURȚII CONSTITUȚIONALE": "DCC",
+    "DECIZIE CURTEA CONSTITUȚIONALĂ": "DCC",
+    "RECTIFICĂRI": "RECTIFICARE",
+    "RECTIFICARI": "RECTIFICARE",
+    "ANUNȚ": "ANUNT",
+    "ANUNT": "ANUNT",
+}
+
 
 class ActExtractionLLM(BaseModel):
     """Full act extraction DTO — metadata + corrected body text."""
     doc_type: str
-    act_number: str = ""
+    act_number: Optional[str] = ""
     act_year: Optional[int] = None
-    issuing_authority: str = ""
-    title: str = ""
+    issuing_authority: Optional[str] = ""
+    title: Optional[str] = ""
     locality: Optional[str] = None
-    full_text_corrected: str = ""      # OCR-corrected body text; empty = use source
+    full_text_corrected: Optional[str] = ""   # OCR-corrected body text; empty = use source
+
+    @field_validator("doc_type", mode="before")
+    @classmethod
+    def normalize_doc_type(cls, v: object) -> str:
+        v = str(v).strip().upper()
+        return _DOC_TYPE_ALIASES.get(v, v)
 
     @field_validator("doc_type")
     @classmethod
     def validate_doc_type(cls, v: str) -> str:
-        v = v.strip().upper()
         if v not in _DOC_TYPE_SET:
             raise ValueError(f"doc_type {v!r} not in allowed set")
         return v
 
+    @field_validator("act_number", "issuing_authority", "title", "full_text_corrected", mode="before")
+    @classmethod
+    def coerce_none_to_empty(cls, v: object) -> str:
+        """NuExtract 3 returns null for optional fields — coerce to empty string."""
+        return "" if v is None else str(v)
+
     @field_validator("act_number")
     @classmethod
     def clean_number(cls, v: str) -> str:
-        return v.strip().rstrip(".")
+        # Strip trailing dots; strip "Nr." prefix NuExtract sometimes adds
+        v = re.sub(r'^[Nn][rR]\.?\s*', '', v).strip().rstrip(".")
+        return v
 
     @field_validator("title")
     @classmethod
@@ -154,14 +189,17 @@ _NUEXTRACT3_TEMPLATE = {
 
 _NUEXTRACT3_INSTRUCTIONS = (
     "Extrage câmpurile din actul normativ românesc. "
-    "doc_type: tipul actului (HG=Hotărâre Guvern, DCC=Decizie Curtea Constituțională). "
-    "act_number: numărul din 'Nr. NNN.' la final, doar cifre. "
-    "act_year: anul din 'București, ZZ LUNA AAAA.'. "
-    "issuing_authority: instituția emitentă completă. "
-    "title: titlul descriptiv (fără '......'). "
-    "locality: județul menționat sau null. "
-    "full_text_corrected: corpul actului cu corecții minime OCR (diacritice, mojibake). "
-    "NU reformula, NU rezuma."
+    "doc_type: EXACT din lista — HG=Hotărâre de Guvern, DCC=Decizie Curtea Constituțională, "
+    "OUG=Ordonanță de Urgență; folosește DOAR valorile enumerate. "
+    "act_number: numărul actului — caută 'Nr. NNN.' în blocul de la final AL actului; "
+    "pentru ORDIN caută și în antet ('ORDIN nr. NNN din'); returnează DOAR cifre, fără punct. "
+    "act_year: anul din 'București, ZZ LUNA AAAA.' sau din antet. "
+    "issuing_authority: denumirea oficială completă a instituției emitente. "
+    "title: titlul descriptiv din corpul actului (nu din cuprins, fără '......'); "
+    "începe cu 'privind', 'pentru', 'referitoare la' etc. "
+    "locality: județul menționat explicit în text, sau null. "
+    "full_text_corrected: corpul COMPLET al actului cu corecții minime OCR "
+    "(diacritice lipsă, mojibake românesc); NU reformula, NU rezuma, NU omite paragrafe."
 )
 
 
@@ -264,7 +302,7 @@ def structure_act(
                 timeout=90.0,
                 max_retries=cfg["max_retries"],
             )
-        data = json.loads(raw_json)
+        data = loads_lenient(raw_json)
         dto = ActExtractionLLM(**data)
     except (Exception, ValidationError) as exc:
         meta = extract_metadata(raw_act, gazette_year)

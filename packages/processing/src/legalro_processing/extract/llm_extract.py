@@ -40,7 +40,7 @@ from typing import Literal, Optional, Any
 
 from pydantic import BaseModel, ValidationError, field_validator
 
-from legalro_core.llm_client import call_llm
+from legalro_core.llm_client import call_llm, loads_lenient
 from legalro_processing.extract.metadata import (
     extract_metadata,
     AUTHORITY_PATTERNS,
@@ -87,10 +87,16 @@ class ActMetadataLLM(BaseModel):
     title: str = ""
     locality: Optional[str] = None
 
+    @field_validator("doc_type", mode="before")
+    @classmethod
+    def normalize_doc_type(cls, v: str) -> str:
+        from legalro_processing.extract.llm_structurer import _DOC_TYPE_ALIASES
+        v = str(v).strip().upper()
+        return _DOC_TYPE_ALIASES.get(v, v)
+
     @field_validator("doc_type")
     @classmethod
     def validate_doc_type(cls, v: str) -> str:
-        v = v.strip().upper()
         if v not in _DOC_TYPE_SET:
             raise ValueError(f"doc_type {v!r} not in allowed set")
         return v
@@ -362,7 +368,7 @@ def resolve_metadata(
             timeout=60.0,
             max_retries=cfg["max_retries"],
         )
-        data = json.loads(raw_json)
+        data = loads_lenient(raw_json)
         dto = ActMetadataLLM(**data)
     except (Exception, ValidationError) as exc:
         # Validation or network failure → regex fallback
@@ -447,7 +453,7 @@ def resolve_segmentation(
             timeout=120.0,
             max_retries=cfg["max_retries"],
         )
-        boundaries_raw = json.loads(raw_json)
+        boundaries_raw = loads_lenient(raw_json)
         if not isinstance(boundaries_raw, list):
             # Some providers wrap the array in a key
             boundaries_raw = next(
@@ -597,7 +603,7 @@ def resolve_metadata_vlm(
             timeout=90.0,
             max_retries=cfg["max_retries"],
         )
-        data = json.loads(raw_json)
+        data = loads_lenient(raw_json)
         dto = ActMetadataLLM(**data)
     except (Exception, ValidationError) as exc:
         print(f"[llm_extract] VLM metadata failed ({type(exc).__name__}): {exc}", flush=True)

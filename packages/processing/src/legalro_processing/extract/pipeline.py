@@ -119,7 +119,9 @@ def run(
 
         # full_text: use LLM-corrected text if available, else plain text
         full_text = meta.pop("full_text_corrected", None) or block.plain_text
+        _via = meta.pop("_via", "unknown")
         _llm_warnings = meta.pop("extraction_warnings", [])
+        _llm_warnings.insert(0, f"_via:{_via}")
 
         meta["_gazette_issue_number"] = issue_number
 

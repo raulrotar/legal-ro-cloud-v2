@@ -8,10 +8,66 @@ time coupling to any specific provider.
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
 import httpx
+
+
+# ── Lenient JSON extractor ────────────────────────────────────────────────────
+
+def loads_lenient(raw: str) -> Any:
+    """Parse JSON from an LLM response that may contain extra tokens or fences.
+
+    Handles:
+    - EOS tokens appended by mlx_lm.server: ``<|im_end|>``, ``<|eot_id|>``, ``</s>``
+    - Markdown code fences: ```json … ``` or ``` … ```
+    - Leading/trailing whitespace
+    - Multiple JSON objects on one line (takes the first balanced ``{…}``)
+
+    Raises ``json.JSONDecodeError`` if no valid JSON object can be extracted.
+    """
+    # Strip known EOS markers
+    raw = re.sub(r'<\|im_end\|>|<\|eot_id\|>|</s>', '', raw).strip()
+
+    # Strip markdown fences
+    raw = re.sub(r'^```(?:json)?\s*', '', raw, flags=re.MULTILINE)
+    raw = re.sub(r'^```\s*$', '', raw, flags=re.MULTILINE)
+    raw = raw.strip()
+
+    # Fast path: if the whole string parses cleanly, return it
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Slow path: extract the first balanced {…} object
+    start = raw.find('{')
+    if start == -1:
+        raise json.JSONDecodeError("No JSON object found", raw, 0)
+    depth = 0
+    in_str = False
+    escape = False
+    for i, ch in enumerate(raw[start:], start):
+        if escape:
+            escape = False
+            continue
+        if ch == '\\' and in_str:
+            escape = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return json.loads(raw[start:i + 1])
+    raise json.JSONDecodeError("Unbalanced JSON object", raw, start)
 
 
 def call_llm(
