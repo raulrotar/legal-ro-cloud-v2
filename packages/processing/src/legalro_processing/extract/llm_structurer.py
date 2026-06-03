@@ -121,27 +121,33 @@ class ActExtractionLLM(BaseModel):
 _SYSTEM = """\
 Ești un specialist în analiza actelor normative din Monitorul Oficial al României.
 
-Primești un bloc Markdown extras prin OCR dintr-un act normativ.
-Trebuie să returnezi un obiect JSON cu câmpurile cerute.
+Primești:
+  A. Un DRAFT deterministic (produs de regex) cu câmpuri și niveluri de încredere.
+  B. Blocul Markdown al actului.
 
-Reguli stricte:
-1. doc_type: EXACT unul din: LEGE, HG, OUG, ORDONANȚĂ, DECRET, DECRET_LEGE,
+Sarcina ta: VERIFICĂ draft-ul și CORECTEAZĂ câmpurile greșite sau incomplete.
+
+REGULI DE VERIFICARE:
+1. doc_type [HIGH]: modifică NUMAI dacă textul arată clar o altă valoare.
+   Valori acceptate: LEGE, HG, OUG, ORDONANȚĂ, DECRET, DECRET_LEGE,
    DCC, DECIZIE, ORDIN, COMUNICAT, RAPORT, ANUNT, RECTIFICARE, UNKNOWN.
-   HG = Hotărâre de Guvern. DCC = Decizie Curtea Constituțională.
-2. act_number: numărul din blocul „Nr. NNN." de la final. Doar cifre și puncte.
-3. act_year: anul din „București, ZZ LUNA AAAA." (sau null).
-4. issuing_authority: instituția emitentă (antet sau semnătură). Denumire oficială completă.
-5. title: titlul descriptiv din corpul actului, NU din cuprins (fără „......").
-   Începe cu „privind", „pentru", „referitoare la" etc.
+2. act_number:
+   - [HIGH]: regexul a găsit blocul „București, DATA. Nr. NNN." — păstrează dacă nu e greșit.
+   - [LOW / "0"]: nu s-a găsit blocul de semnătură. CAUTĂ în textul actului:
+     • Blocul „București, ZZ LUNA AAAA.\\nNr. NNN." (poate fi pe rânduri separate).
+     • Sau antetul „ORDIN nr. NNN din..." / „DECIZIE nr. NNN/AAAA".
+     • ATENȚIE: numerele din clauze de abrogare („Ordinul nr. X/AAAA ... se abrogă")
+       NU sunt numărul actului curent — ignoră-le complet.
+     • Dacă nu găsești nimic sigur, returnează "0".
+3. act_year [HIGH/LOW]: anul din blocul de semnătură sau din antet. Null dacă lipsește.
+4. issuing_authority [HIGH]: păstrează dacă regexul l-a găsit; completează dacă lipsește.
+5. title [LOW]: titlul descriptiv din corpul actului, NU din cuprins (fără „......").
+   Începe cu „privind", „pentru", „referitoare la" etc. Corectează sau completează liber.
 6. locality: județul menționat explicit, sau null.
-7. full_text_corrected: corpul complet al actului cu CORECȚII MINIME:
-   - Caractere lipsă/greșite din OCR: ă/â/î/ș/ț (ex: „c'deri"→„căderi")
-   - Mojibake specific românesc: „'"->" ă", „,"→„ă", „ã"→„ă" etc.
-   - Litere cu spații: „D E C R E T"→„DECRET", „H O T Ă R Â R E"→„HOTĂRÂRE"
+7. full_text_corrected: corpul complet al actului cu CORECȚII MINIME OCR:
+   - Caractere lipsă: ă/â/î/ș/ț; mojibake românesc; litere cu spații (D E C R E T→DECRET).
    - NU reformula, NU rezuma, NU adăuga informații noi.
-   - Dacă textul este deja corect, copiază-l identic.
-   - Păstrează toate articolele, alineatele, tabelele și semnăturile.
-   - Lungimea full_text_corrected trebuie să fie apropiată de lungimea sursei.
+   - Dacă textul e corect, copiază-l identic. Lungimea trebuie să fie apropiată de sursă.
 
 Returnează EXCLUSIV JSON valid, fără text suplimentar, fără markdown.
 Schema exactă:
@@ -158,7 +164,9 @@ Schema exactă:
 
 _USER_TMPL = """\
 Gazette year: {gazette_year}
-Hint din sumar (poate conține puncte de ghidaj — NU folosi ca titlu): {sumar_hint}
+
+DRAFT (regex deterministic — verifică și corectează):
+{draft_block}
 
 MARKDOWN ACT (primele ~2500 + ultimele ~800 caractere):
 === INCEPUT ===
@@ -167,30 +175,31 @@ MARKDOWN ACT (primele ~2500 + ultimele ~800 caractere):
 {tail}
 === SFARSIT ===
 
-Extrage metadatele și returnează JSON.
+Verifică draft-ul față de textul actului și returnează JSON corectat.
 """
 
 # Used when act is too long for full_text_corrected — metadata only
 _SYSTEM_META_ONLY = """\
 Ești un specialist în analiza actelor normative din Monitorul Oficial al României.
 
-Primești un bloc Markdown extras dintr-un act normativ.
-Trebuie să returnezi un obiect JSON DOAR cu câmpurile de metadate (fără full_text_corrected).
+Primești un DRAFT deterministic (regex) și blocul Markdown al actului.
+Returnează DOAR câmpurile de metadate (fără full_text_corrected).
 
-Reguli stricte:
-1. doc_type: EXACT unul din: LEGE, HG, OUG, ORDONANȚĂ, DECRET, DECRET_LEGE,
-   DCC, DECIZIE, ORDIN, COMUNICAT, RAPORT, ANUNT, RECTIFICARE, UNKNOWN.
-   HG = Hotărâre de Guvern. DCC = Decizie Curtea Constituțională.
-2. act_number: numărul din blocul „Nr. NNN." de la final. Doar cifre și puncte.
-   Pentru ORDIN caută și în antet „ORDIN nr. NNN din". Fără text suplimentar.
-3. act_year: anul din „București, ZZ LUNA AAAA." (sau null).
-4. issuing_authority: instituția emitentă (antet sau semnătură). Denumire oficială completă.
-5. title: titlul descriptiv din corpul actului, NU din cuprins (fără „......").
-   Începe cu „privind", „pentru", „referitoare la" etc.
-6. locality: județul menționat explicit, sau null.
+REGULI:
+1. doc_type [HIGH]: modifică doar dacă e clar greșit. Valori: LEGE, HG, OUG,
+   ORDONANȚĂ, DECRET, DECRET_LEGE, DCC, DECIZIE, ORDIN, COMUNICAT, RAPORT,
+   ANUNT, RECTIFICARE, UNKNOWN.
+2. act_number:
+   - [HIGH]: păstrează dacă nu e evident greșit.
+   - [LOW / "0"]: caută „București, DATA.\\nNr. NNN." sau „ORDIN nr. NNN din".
+     IGNORĂ numerele din clauze de abrogare („nr. X/AAAA ... se abrogă").
+     Dacă nu găsești, returnează "0".
+3. act_year: din blocul de semnătură sau antet (null dacă lipsește).
+4. issuing_authority [HIGH]: păstrează; completează dacă lipsește.
+5. title [LOW]: titlu descriptiv din corpul actului (nu din cuprins, fără „......").
+6. locality: județ explicit sau null.
 
-Returnează EXCLUSIV JSON valid, fără text suplimentar, fără markdown.
-Schema exactă:
+Returnează EXCLUSIV JSON valid:
 {
   "doc_type": "...",
   "act_number": "...",
@@ -282,13 +291,22 @@ def structure_act(
     gazette_year: int,
     settings,
     edit_distance_threshold: float = 0.15,
+    rule_draft=None,
 ) -> dict:
     """Extract structured metadata + corrected full_text from a MdActBlock.
 
     Returns a dict with the same keys as extract_metadata() plus '_via'.
+
+    Two-stage Draft-then-Verify pipeline:
+      Stage 1 (deterministic): rule_draft from md_rule_extractor.extract_rule_draft()
+                                is injected into the LLM prompt as an anchor.
+      Stage 2 (LLM):          verifies and corrects the draft; high-confidence
+                                fields are protected from LLM override.
+
     Falls back to the regex path on any LLM/validation failure.
     """
     from legalro_processing.extract.metadata import extract_metadata
+    from legalro_processing.extract.md_rule_extractor import extract_rule_draft, RuleDraft
     from legalro_processing.extract.segment import RawAct
 
     # Build a RawAct from plain text for the regex fallback
@@ -299,15 +317,27 @@ def structure_act(
         position_in_gazette=0,
     )
 
+    # Ensure we have a rule draft (caller may pre-compute it for efficiency)
+    if rule_draft is None:
+        rule_draft = extract_rule_draft(block, gazette_year)
+
     ecfg = getattr(settings, "extraction_llm", None) if settings else None
     if not ecfg or not ecfg.enabled:
+        # No LLM — return rule-draft-enhanced regex result
         meta = extract_metadata(raw_act, gazette_year)
+        # Override act_number/year with the full-block scan result if it's better
+        if rule_draft.act_number_confidence == "high" and rule_draft.act_number != "0":
+            meta["act_number"] = rule_draft.act_number
+            if rule_draft.act_year:
+                meta["act_year"] = rule_draft.act_year
         meta["full_text_corrected"] = block.plain_text
+        meta["_via"] = "regex_draft(llm_disabled)"
         return meta
 
+    # Build the draft block string for injection into the prompt
+    draft_block = _format_draft_block(rule_draft)
+
     # Prepare prompt — long acts skip full_text_corrected to avoid token truncation.
-    # Acts over _LONG_ACT_THRESHOLD chars would require the LLM to reproduce thousands
-    # of tokens verbatim, risking truncated JSON. Use source text directly instead.
     text = block.markdown
     is_long_act = len(text) > _LONG_ACT_THRESHOLD
     head = text[:2500] if len(text) > 2500 else text
@@ -315,7 +345,7 @@ def structure_act(
 
     user_msg = _USER_TMPL.format(
         gazette_year=gazette_year,
-        sumar_hint=block.title_hint or "(fără hint)",
+        draft_block=draft_block,
         head=head,
         tail=tail,
     )
@@ -343,16 +373,43 @@ def structure_act(
         data = loads_lenient(raw_json)
         dto = ActExtractionLLM(**data)
     except (Exception, ValidationError) as exc:
-        meta = extract_metadata(raw_act, gazette_year)
-        meta["full_text_corrected"] = block.plain_text
+        meta = _rule_draft_to_meta(rule_draft, gazette_year, block.plain_text)
         meta["_via"] = f"regex_fallback(llm_failed:{type(exc).__name__})"
         meta.setdefault("extraction_warnings", []).append(
             f"LLM structuring failed: {str(exc)[:120]}"
         )
         return meta
 
-    # Validate full_text_corrected with edit-distance guard.
-    # For long acts we used metadata-only mode — full_text_corrected is empty by design.
+    # ── High-confidence override guard ────────────────────────────────────────
+    # When the rule draft has HIGH confidence on a field but the LLM produced
+    # a different value, keep the regex result and log the conflict.
+    override_warnings: list[str] = []
+
+    if (rule_draft.act_number_confidence == "high"
+            and rule_draft.act_number != "0"
+            and dto.act_number != rule_draft.act_number):
+        override_warnings.append(
+            f"act_number: LLM returned {dto.act_number!r} but regex closing-block "
+            f"found {rule_draft.act_number!r} (high-confidence) — keeping regex value"
+        )
+        # Patch the DTO in-place (pydantic v2 allows model_copy; v1 allows direct set)
+        try:
+            dto = dto.model_copy(update={"act_number": rule_draft.act_number})
+        except AttributeError:
+            object.__setattr__(dto, "act_number", rule_draft.act_number)
+
+    if (rule_draft.issuing_authority_confidence == "high"
+            and rule_draft.issuing_authority
+            and not dto.issuing_authority):
+        try:
+            dto = dto.model_copy(update={"issuing_authority": rule_draft.issuing_authority})
+        except AttributeError:
+            object.__setattr__(dto, "issuing_authority", rule_draft.issuing_authority)
+
+    # ── Diff audit ────────────────────────────────────────────────────────────
+    diff = _audit_diff(rule_draft, dto)
+
+    # ── Validate full_text_corrected ──────────────────────────────────────────
     corrected = (dto.full_text_corrected or "").strip()
     source = block.plain_text.strip()
     if is_long_act or not corrected:
@@ -367,18 +424,19 @@ def structure_act(
 
     meta = _dto_to_meta(dto, gazette_year, accepted_text)
     meta["_via"] = f"llm_option_c+{text_via}"
-    meta.setdefault("extraction_warnings", []).append(f"structured via Option C LLM ({text_via})")
+    via_note = f"structured via Option C LLM ({text_via})"
+    if diff:
+        via_note += f"; draft→llm changes: {', '.join(diff)}"
+    meta.setdefault("extraction_warnings", []).append(via_note)
+    meta["extraction_warnings"].extend(override_warnings)
 
-    # Field-level fallback for act_number
+    # ── Field-level fallback for act_number if still 0 ───────────────────────
     if not meta.get("act_number") or meta["act_number"] == "0":
-        m_close = list(CLOSING_BLOCK.finditer(source))
-        if m_close:
-            meta["act_number"] = m_close[-1].group(2).replace(".", "")
-            meta["act_year"] = int(m_close[-1].group(1))
+        if rule_draft.act_number and rule_draft.act_number != "0":
+            meta["act_number"] = rule_draft.act_number
+            if rule_draft.act_year:
+                meta["act_year"] = rule_draft.act_year
         else:
-            # End-of-line Nr. fallback: matches "Nr. 22." on its own line.
-            # More precise than BARE_NR which can hit legal references like
-            # "Hotărârea CSM nr. 5 din...".
             m_eol = re.search(r'(?:^|\n)\s*Nr\.\s*([\d.]+)\.\s*$', source, re.MULTILINE)
             if m_eol:
                 meta["act_number"] = m_eol.group(1)
@@ -394,6 +452,64 @@ def structure_act(
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _format_draft_block(draft) -> str:
+    """Render a RuleDraft as a human-readable block for the LLM prompt."""
+    def conf(c: str) -> str:
+        return "[HIGH — regex confident]" if c == "high" else "[LOW — verify carefully]"
+
+    lines = [
+        f'  "doc_type": "{draft.doc_type}"  {conf(draft.doc_type_confidence)}',
+        f'  "act_number": "{draft.act_number}"  {conf(draft.act_number_confidence)}',
+        f'  "act_year": {draft.act_year}  {conf(draft.act_year_confidence)}',
+        f'  "issuing_authority": "{draft.issuing_authority}"  {conf(draft.issuing_authority_confidence)}',
+        f'  "title": "{draft.title[:120]}"  [LOW — always approximate]',
+        f'  "locality": {json.dumps(draft.locality)}',
+    ]
+    if draft.abrogation_numbers:
+        lines.append(
+            f'  // ATENȚIE: aceste numere apar în clauze de abrogare — '
+            f'NU sunt numărul actului curent: {draft.abrogation_numbers}'
+        )
+    for w in draft.warnings:
+        lines.append(f'  // {w}')
+    return "{\n" + "\n".join(lines) + "\n}"
+
+
+def _rule_draft_to_meta(draft, gazette_year: int, full_text: str) -> dict:
+    """Convert a RuleDraft to a metadata dict (LLM fallback path)."""
+    act_year = draft.act_year or gazette_year
+    authority_tag = _derive_authority_tag(draft.issuing_authority)
+    type_slug = draft.doc_type.lower()
+    if authority_tag:
+        law_id = f"{type_slug}_{authority_tag}_{draft.act_number}_{act_year}_v1"
+    else:
+        law_id = f"{type_slug}_{draft.act_number}_{act_year}_v1"
+    return {
+        "doc_type": draft.doc_type,
+        "act_number": draft.act_number,
+        "act_year": act_year,
+        "issuing_authority": draft.issuing_authority,
+        "authority_tag": authority_tag,
+        "locality": draft.locality,
+        "title": draft.title,
+        "law_id": law_id,
+        "full_text_corrected": full_text,
+        "extraction_warnings": list(draft.warnings),
+    }
+
+
+def _audit_diff(draft, dto) -> list[str]:
+    """Return list of field changes LLM made vs the rule draft."""
+    changes = []
+    if draft.act_number != (dto.act_number or ""):
+        changes.append(f"act_number: {draft.act_number!r}→{dto.act_number!r}")
+    if draft.doc_type != (dto.doc_type or ""):
+        changes.append(f"doc_type: {draft.doc_type!r}→{dto.doc_type!r}")
+    if str(draft.issuing_authority) != str(dto.issuing_authority or ""):
+        changes.append(f"authority: changed")
+    return changes
+
 
 def _effective_config(settings) -> dict[str, Any]:
     ecfg = settings.extraction_llm

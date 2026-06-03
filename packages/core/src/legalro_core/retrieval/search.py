@@ -5,9 +5,20 @@ from legalro_core.embeddings import embed_texts
 from legalro_core.store import get_db
 
 _ACT_NR_RE = re.compile(r'\bnr\.?\s*([\d.]+\d)/(\d{4})\b', re.IGNORECASE)
-# Captures MO number AND optionally the year when the query contains "MO nr. N/YYYY".
+# Captures MO issue number AND optionally the year from queries like:
+#   "MO nr. 2/1989"                   → (2, 1989)
+#   "Monitorul Oficial nr. 820/3.XII.2007"  → (820, 2007)
+#   "Monitorul Oficial nr. 4 din 27 decembrie 1989" → (4, 1989)
 # Group 1 = MO issue number, Group 2 = year (4 digits, optional).
-_MO_NR_RE = re.compile(r'\bMO\b.*?nr\.?\s*(\d+)(?:[/_](\d{4}))?', re.IGNORECASE)
+_MO_NR_RE = re.compile(
+    r'(?:\bMO\b|Monitorul\s+Oficial)\s*(?:nr\.?\s*|,\s*)(\d+)'
+    r'(?:'
+    r'[/_](?:\d{1,2}[\./](?:[IVXLCDM]+|[A-Za-z]+)[\./])?(\d{4})'  # N/D.M.YYYY or N/YYYY
+    r'|'
+    r'\s+din\s+\d{1,2}\s+\w+\s+(\d{4})'                            # N din DD MMMM YYYY
+    r')?',
+    re.IGNORECASE,
+)
 _PI_RE = re.compile(r'\bPI_(\d+)_(\d{4})\b', re.IGNORECASE)
 
 _PIPELINE_LIMIT = 80  # candidates per pipeline before RRF merge
@@ -41,8 +52,9 @@ def _parse_query_metadata(query: str) -> dict:
     m = _MO_NR_RE.search(query)
     if m:
         meta["mo_number"] = m.group(1)
-        if m.group(2):
-            meta["mo_year"] = int(m.group(2))
+        year = m.group(2) or m.group(3)  # group 2: N/YYYY form, group 3: "din DD MMMM YYYY" form
+        if year:
+            meta["mo_year"] = int(year)
     return meta
 
 
@@ -63,11 +75,20 @@ def _apply_metadata_boost(docs: list[dict], meta: dict) -> list[dict]:
             issue = doc.get("source_issue_id", "")
             mo_year = meta.get("mo_year")
             if mo_year:
-                # Exact issue-ID match: PI_{n}_{year} or PI_{n}Bis_{year}
-                # Strong boost — decisively favours the right issue when the
+                # Exact issue-ID match supporting both v1 (PI_N_Y) and v2 (MO_PI_N_Y)
+                # formats. Strong boost — decisively favours the right issue when the
                 # query explicitly states both MO number and year.
-                if issue in (f"PI_{mo_num}_{mo_year}", f"PI_{mo_num}Bis_{mo_year}"):
+                exact_ids = (
+                    f"MO_PI_{mo_num}_{mo_year}", f"MO_PI_{mo_num}Bis_{mo_year}",
+                    f"PI_{mo_num}_{mo_year}", f"PI_{mo_num}Bis_{mo_year}",
+                )
+                if issue in exact_ids:
                     boost += _METADATA_BOOST * _MO_EXACT_MULTIPLIER
+                else:
+                    # Loose match: issue contains the number AND year (handles
+                    # cases where format is slightly different)
+                    if mo_num in issue and str(mo_year) in issue:
+                        boost += _METADATA_BOOST * 2
             elif mo_num in issue:
                 # Fallback: no year in query — use weak substring boost
                 boost += _METADATA_BOOST

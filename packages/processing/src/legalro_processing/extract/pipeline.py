@@ -47,7 +47,7 @@ def run(
     computed (identity, sumar, era) so this function is a drop-in replacement
     for the act-extraction segment of that function.
     """
-    from legalro_processing.extract import md_cache, md_extractor, md_segmenter, llm_structurer
+    from legalro_processing.extract import md_cache, md_extractor, md_segmenter, llm_structurer, md_rule_extractor
     from legalro_processing.extract.gazette_schema import GazetteDocument, LegalAct
     from legalro_processing.extract.gazette_extractor import _build_act
     from legalro_processing.extract.metadata import extract_metadata
@@ -113,11 +113,16 @@ def run(
         if act_idx < len(sumar_entries):
             block.title_hint = block.title_hint or getattr(sumar_entries[act_idx], "title", "")
 
+        # Stage 1: deterministic rule-based draft (full-block scan)
+        rule_draft = md_rule_extractor.extract_rule_draft(block, gazette_year)
+
+        # Stage 2: LLM verifies and corrects the draft
         meta = llm_structurer.structure_act(
             block,
             gazette_year=gazette_year,
             settings=settings,
             edit_distance_threshold=edit_thr,
+            rule_draft=rule_draft,
         )
 
         # full_text: use LLM-corrected text if available, else plain text
@@ -183,19 +188,23 @@ def _normalize_gazette_md(md: str) -> str:
 
     Normalizations:
     1. Strip legalro cache header comments (<!--legalro:...-->)
-    2. Collapse multiple internal spaces in body lines (PDF word-spacing artifacts)
-    3. Fix common broken diacritics: ş→ș, ţ→ț (broken_2007/2002 encoding)
-    4. Strip SUMAR table block (large TOC that wastes tokens; segmenter skips it anyway)
+    2. Fix common broken diacritics: ş→ș, ţ→ț (broken_2007/2002 encoding)
+    3. Collapse multiple internal spaces in body lines (PDF word-spacing artifacts)
+    4. Recover split closing blocks — when Docling places a lone "Nr. N." line
+       BEFORE the institution heading that starts the next act, it belongs to the
+       act ENDING there, not the one starting.  We leave it in place (the segmenter
+       keeps it in the preceding block) but ensure no double-counting occurs.
+    5. Annotate orphaned signatures — minister signatures without a preceding
+       date+Nr. block get a comment tag so the rule extractor can warn the LLM.
     """
     import re
 
     # 1. Strip cache header comments
     md = re.sub(r'<!--legalro:[^>]+-->\n?', '', md)
 
-    # 2. Fix broken diacritics (cedilla variants → comma-below, correct Romanian)
+    # 2. Fix broken diacritics
     md = md.replace('ş', 'ș').replace('Ş', 'Ș')
     md = md.replace('ţ', 'ț').replace('Ţ', 'Ț')
-    # Common OCR mojibake for ă
     md = md.replace('\x82', 'ă').replace('\x92', 'ș').replace('\x93', 'ț')
 
     # 3. Collapse multiple internal spaces in body lines (not in headings/tables)
@@ -207,6 +216,26 @@ def _normalize_gazette_md(md: str) -> str:
         else:
             result.append(re.sub(r'(?<=\S)  +(?=\S)', ' ', line))
     md = '\n'.join(result)
+
+    # 4+5. Detect orphaned minister signatures:
+    # Pattern: a signature attribution line ("Ministrul X, Prenume Nume") that is
+    # NOT preceded by a "București, DATE." within the previous 300 chars.
+    # This happens when Docling misses the date+Nr. block for long acts.
+    # We insert an HTML comment that the rule extractor can detect via the warning.
+    _MINISTER_SIG = re.compile(
+        r'(?m)^((?:Ministrul|Ministr(?:ul|a)|Președintele|Directorul\s+general'
+        r'|Guvernatorul|p\.\s+Ministrul|Secretarul\s+de\s+stat)[^\n]{0,120},)\s*$'
+    )
+    _BUCURESTI_DATE = re.compile(r'Bucure[șs]ti,\s+\d{1,2}\s+\w+\s+\d{4}')
+
+    def _annotate_orphaned(m: re.Match) -> str:
+        # Check whether a București date appears in the 300 chars before this signature
+        before = md[:m.start()][-300:]
+        if not _BUCURESTI_DATE.search(before):
+            return m.group(0) + "\n<!-- legalro:orphaned-signature -->"
+        return m.group(0)
+
+    md = _MINISTER_SIG.sub(_annotate_orphaned, md)
 
     return md
 
