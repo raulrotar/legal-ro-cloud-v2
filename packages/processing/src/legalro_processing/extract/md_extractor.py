@@ -103,12 +103,22 @@ def _extract_docling_md(pdf_path: str, era: Era) -> str:
         format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
     )
     result = converter.convert(pdf_path)
-    # Export full document as one Markdown string — no per-page splitting.
-    return result.document.export_to_markdown(
+    # Export before releasing the converter — keeps full_text in a plain string.
+    markdown = result.document.export_to_markdown(
         escape_html=False,
         escape_underscores=False,
         image_placeholder="",
     )
+
+    # Explicitly free Docling's MPS/GPU memory before the LLM stage runs.
+    # Without this, RT-DETRv2 + TableFormer stay resident alongside the LLM,
+    # which can exhaust 24 GB unified memory on Apple Silicon.
+    del result
+    del converter
+    import gc
+    gc.collect()
+
+    return markdown
 
 
 def _auto_ocr_options():
