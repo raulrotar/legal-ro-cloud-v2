@@ -53,7 +53,7 @@ extraction_llm:
   # etc.) extraction is retried with this model.  Leave fallback_model empty
   # to retry with the same model.
   # Example: switch to a larger/more capable model for hard cases.
-  fallback_model: ""                  # e.g. "mlx-community/Llama-3.3-70B-Instruct-4bit"
-  fallback_base_url: ""               # empty → same as base_url
-  fallback_api_key: ""                # empty → same as api_key
+  fallback_model: "numind/NuExtract3-mlx-mxfp8"
+  fallback_base_url: ""               # empty → same as base_url (http://localhost:8080/v1)
+  fallback_api_key: ""
   fallback_max_tokens: 0              # 0 → same as max_tokens
