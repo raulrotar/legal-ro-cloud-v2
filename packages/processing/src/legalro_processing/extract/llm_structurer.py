@@ -376,9 +376,16 @@ def structure_act(
             meta["act_number"] = m_close[-1].group(2).replace(".", "")
             meta["act_year"] = int(m_close[-1].group(1))
         else:
-            bare = list(BARE_NR.finditer(source))
-            if bare:
-                meta["act_number"] = bare[-1].group(1).replace(".", "")
+            # End-of-line Nr. fallback: matches "Nr. 22." on its own line.
+            # More precise than BARE_NR which can hit legal references like
+            # "Hotărârea CSM nr. 5 din...".
+            m_eol = re.search(r'(?:^|\n)\s*Nr\.\s*([\d.]+)\.\s*$', source, re.MULTILINE)
+            if m_eol:
+                meta["act_number"] = m_eol.group(1)
+            else:
+                bare = list(BARE_NR.finditer(source))
+                if bare:
+                    meta["act_number"] = bare[-1].group(1).replace(".", "")
 
     if not meta.get("locality"):
         meta["locality"] = _extract_locality(source) or None
@@ -409,17 +416,26 @@ def _derive_authority_tag(name: str) -> str:
     return re.sub(r'[^a-z]', '', name.lower())[:6]
 
 
+_CURTEA_RE = re.compile(r'CURTEA\s+CONSTITU[TȚ]IONAL[AĂ]', re.IGNORECASE)
+
+
 def _dto_to_meta(dto: ActExtractionLLM, gazette_year: int, full_text: str) -> dict:
+    # Post-process: upgrade DECIZIE → DCC when Curtea Constituțională is the authority.
+    # Llama reliably identifies the authority but sometimes returns DECIZIE instead of DCC.
+    doc_type = dto.doc_type
+    if doc_type == "DECIZIE" and _CURTEA_RE.search(dto.issuing_authority or ""):
+        doc_type = "DCC"
+
     authority_tag = _derive_authority_tag(dto.issuing_authority)
     act_year = dto.act_year or gazette_year
-    type_slug = dto.doc_type.lower()
+    type_slug = doc_type.lower()
     law_id = (
         f"{type_slug}_{authority_tag}_{dto.act_number}_{act_year}_v1"
         if authority_tag
         else f"{type_slug}_{dto.act_number}_{act_year}_v1"
     )
     return {
-        "doc_type":            dto.doc_type,
+        "doc_type":            doc_type,
         "act_number":          dto.act_number,
         "act_year":            act_year,
         "issuing_authority":   dto.issuing_authority,
