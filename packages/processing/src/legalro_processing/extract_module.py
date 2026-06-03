@@ -64,31 +64,39 @@ def run_extraction(
 
     # ── Extract + validate loop ───────────────────────────────────────────────
     json_path: Path | None = None
-    last_issues: list = []
+    active_settings = settings
 
     for attempt in range(1 + MAX_RETRIES):
-        gazette = extract_gazette(path, settings)
+        gazette = extract_gazette(path, active_settings)
         json_path = save_gazette(gazette, out_dir)
 
         issues = validate_file(json_path)
         errors = [i for i in issues if i.severity == Severity.ERROR]
 
         if not errors:
-            # Clean extraction — done
+            if attempt > 0:
+                _log(f"[validate] {path.name} — clean after {attempt + 1} attempt(s)")
             return json_path
 
-        last_issues = errors
         error_summary = "; ".join(
             f"act[{i.act_index}] {i.check}: {i.message}" for i in errors
         )
 
         if attempt < MAX_RETRIES:
-            # Delete and retry
             json_path.unlink(missing_ok=True)
-            _log(f"[validate] {path.name} attempt {attempt + 1} — {len(errors)} error(s), "
-                 f"retrying: {error_summary}")
+            # Switch to fallback model on the next attempt if one is configured
+            fallback = _make_fallback_settings(settings, attempt)
+            if fallback is not active_settings:
+                ecfg = getattr(fallback, "extraction_llm", None)
+                model = getattr(ecfg, "model", "") or getattr(getattr(fallback, "llm", None), "model", "")
+                _log(f"[validate] {path.name} attempt {attempt + 1} — "
+                     f"{len(errors)} error(s), retrying with fallback model {model!r}: "
+                     f"{error_summary}")
+            else:
+                _log(f"[validate] {path.name} attempt {attempt + 1} — "
+                     f"{len(errors)} error(s), retrying: {error_summary}")
+            active_settings = fallback
         else:
-            # Exhausted retries — annotate the JSON and return it
             _log(f"[validate] {path.name} — {len(errors)} error(s) remain after "
                  f"{1 + MAX_RETRIES} attempt(s); annotating JSON: {error_summary}")
             _annotate_remaining_issues(json_path, errors)
@@ -105,6 +113,54 @@ def _expected_json_path(pdf_path: Path, out_dir: Path) -> Path | None:
         return None
     year, month, day = m.group(3), m.group(4), m.group(5)
     return out_dir / year / month / day / f"{pdf_path.stem}.json"
+
+
+def _make_fallback_settings(settings: "Settings", attempt: int) -> "Settings":
+    """Return a settings object that uses the fallback model for retries.
+
+    On attempt 0 the primary model is used; attempt 1+ switches to the
+    fallback model if one is configured.  If no fallback is set, returns
+    the same settings object (same model retried, which still helps when
+    temperature > 0 or the LLM output is non-deterministic).
+    """
+    if attempt == 0:
+        return settings
+
+    ecfg = getattr(settings, "extraction_llm", None)
+    if not ecfg:
+        return settings
+
+    fallback_model   = getattr(ecfg, "fallback_model", "")
+    fallback_base    = getattr(ecfg, "fallback_base_url", "")
+    fallback_key     = getattr(ecfg, "fallback_api_key", "")
+    fallback_tokens  = getattr(ecfg, "fallback_max_tokens", 0)
+
+    if not fallback_model:
+        # No fallback configured — retry with same model
+        return settings
+
+    # Build a shallow copy of settings with the extraction_llm fields patched.
+    # Pydantic v2: use model_copy; v1: copy() or manual dict round-trip.
+    try:
+        new_ecfg = ecfg.model_copy(update={
+            "model":      fallback_model,
+            "base_url":   fallback_base  or ecfg.base_url,
+            "api_key":    fallback_key   or ecfg.api_key,
+            "max_tokens": fallback_tokens or ecfg.max_tokens,
+        })
+        return settings.model_copy(update={"extraction_llm": new_ecfg})
+    except AttributeError:
+        # Pydantic v1 fallback
+        try:
+            new_ecfg = ecfg.copy(update={
+                "model":      fallback_model,
+                "base_url":   fallback_base  or ecfg.base_url,
+                "api_key":    fallback_key   or ecfg.api_key,
+                "max_tokens": fallback_tokens or ecfg.max_tokens,
+            })
+            return settings.copy(update={"extraction_llm": new_ecfg})
+        except Exception:
+            return settings
 
 
 def _annotate_remaining_issues(json_path: Path, errors: list) -> None:

@@ -60,3 +60,11 @@ extraction_llm:
   temperature: 0.0
   max_tokens: 2048
   max_retries: 2
+  # ── Fallback model for validation-triggered retries ──────────────────────
+  # Primary (above): fast model (Gemini Flash Lite / NuExtract3)
+  # Fallback: more capable model used when validation finds ERROR-level issues.
+  # Example: primary=gemini-flash-lite, fallback=gemini-2.5-pro
+  fallback_model: ""            # e.g. "gemini-2.5-pro" or vLLM endpoint
+  fallback_base_url: ""
+  fallback_api_key: ""
+  fallback_max_tokens: 0        # 0 → same as max_tokens
