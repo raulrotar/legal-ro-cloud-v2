@@ -22,6 +22,7 @@ app = typer.Typer(help="LegalRo processing pipeline (Stage A extract+embed, Stag
 def extract(
     root: Path = typer.Option(..., help="Directory of source PDFs (searched recursively)."),
     out: Path = typer.Option(Path("out"), help="Bundle output root."),
+    extracted_dir: Path = typer.Option(Path("extracted"), help="Where to save/cache GazetteDocument JSONs."),
     config: str = typer.Option(None, help="Path to a config yaml (defaults to env/cloud.yaml)."),
     embed: bool = typer.Option(True, help="Compute bge-m3 embeddings (off = fast structural run)."),
     gzip_chunks: bool = typer.Option(True, help="gzip chunks.jsonl in the bundle."),
@@ -36,6 +37,7 @@ def extract(
 
     settings = load_settings(config)
     out.mkdir(parents=True, exist_ok=True)
+    extracted_dir.mkdir(parents=True, exist_ok=True)
 
     pdfs = sorted(root.rglob("*.pdf"))
     if limit:
@@ -44,11 +46,11 @@ def extract(
         typer.echo(f"No PDFs found under {root}")
         raise typer.Exit(code=1)
 
-    typer.echo(f"[extract] {len(pdfs)} PDF(s) -> {out}  (embed={embed})")
+    typer.echo(f"[extract] {len(pdfs)} PDF(s) -> {out}  extracted_dir={extracted_dir}  (embed={embed})")
     ok, failed, cov_min = 0, 0, 1.0
     for i, pdf in enumerate(pdfs, 1):
         try:
-            json_path = run_extraction(pdf, settings)
+            json_path = run_extraction(pdf, settings, extracted_dir=extracted_dir)
             gazette = load_gazette(json_path)
             issue_id, sha, gazette_doc, chunks, coverage = build_issue_docs(
                 gazette, pdf, settings, embed=embed
@@ -64,6 +66,53 @@ def extract(
 
     typer.echo(f"[extract] done: {ok} ok, {failed} failed, coverage_min={cov_min:.3f}")
     typer.echo(f"[extract] manifest: {out / 'manifest.jsonl'}")
+
+
+@app.command()
+def extract_json(
+    root: Path = typer.Option(..., help="Directory of source PDFs (searched recursively)."),
+    extracted_dir: Path = typer.Option(Path("extracted"), help="Output directory for GazetteDocument JSONs."),
+    config: str = typer.Option(None, help="Path to a config yaml."),
+    limit: int = typer.Option(0, help="Process at most N PDFs (0 = all)."),
+):
+    """PDF → GazetteDocument JSON only. No embeddings, no MongoDB.
+
+    Use this to test/iterate on extraction quality (including LLM extraction)
+    without running the full pipeline. JSONs are saved under --extracted-dir.
+
+    Example — run with LLM extraction into a separate folder:
+      legalro-process extract-json \\
+        --root laws/ \\
+        --extracted-dir extracted_llm/ \\
+        --config config/local.yaml
+    """
+    from legalro_core.config import load_settings
+    from legalro_processing.extract_module import run_extraction
+
+    settings = load_settings(config)
+    extracted_dir.mkdir(parents=True, exist_ok=True)
+
+    pdfs = sorted(root.rglob("*.pdf"))
+    if limit:
+        pdfs = pdfs[:limit]
+    if not pdfs:
+        typer.echo(f"No PDFs found under {root}")
+        raise typer.Exit(code=1)
+
+    llm_on = getattr(getattr(settings, "extraction_llm", None), "enabled", False)
+    typer.echo(f"[extract-json] {len(pdfs)} PDF(s) -> {extracted_dir}  llm={llm_on}")
+
+    ok = failed = 0
+    for i, pdf in enumerate(pdfs, 1):
+        try:
+            json_path = run_extraction(pdf, settings, extracted_dir=extracted_dir)
+            typer.echo(f"  [{i}/{len(pdfs)}] {pdf.name} -> {json_path}")
+            ok += 1
+        except Exception as exc:
+            failed += 1
+            typer.echo(f"  [{i}/{len(pdfs)}] FAILED {pdf.name}: {exc}")
+
+    typer.echo(f"[extract-json] done: {ok} ok, {failed} failed")
 
 
 @app.command()

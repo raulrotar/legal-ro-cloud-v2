@@ -24,3 +24,12 @@ laws/
 
 .claude/
 reports/
+
+#extraction
+extracted_nuextract/
+extracted_nuextract_test/
+extracted_option_c/
+extracted_qwen9b/
+extracted_qwen14b/
+extracted_llama31/
+extracted_llm/

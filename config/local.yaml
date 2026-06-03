@@ -1,7 +1,7 @@
 llm:
   provider: "mlx"
   base_url: "http://localhost:8080/v1"
-  model: "mlx-community/Qwen3.5-9B-4bit"
+  model: "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"
   max_tokens: 16384
   temperature: 0.1
   agentic_max_tokens: 4096
@@ -30,3 +30,21 @@ search:
   limit: 15
   parent_doc_top_n: 3
   max_parent_chars: 8000
+
+# ── LLM-based extraction (Option C: Docling→MD→LLM→JSON) ────────────────────
+# base_url is empty → inherits from llm.base_url above (http://localhost:8080/v1)
+# Start the server first:
+#   mlx_lm.server --model numind/NuExtract3-mlx-mxfp8 --port 8080
+extraction_llm:
+  enabled: true
+  mode: "md_llm"                      # Option C pipeline
+  metadata_enabled: true
+  segmentation_enabled: false
+  vlm_enabled: false
+  md_cache_dir: "md_cache"            # intermediate .md files (human-inspectable)
+  edit_distance_threshold: 0.15       # max allowed edit ratio for LLM body-text correction
+  base_url: ""                        # inherits http://localhost:8080/v1
+  model: "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"   # best local: 96.9% accuracy, standard prompts
+  temperature: 0.0
+  max_tokens: 4096   # raised from 2048 — long ORDINs were truncating mid-JSON
+  max_retries: 2
