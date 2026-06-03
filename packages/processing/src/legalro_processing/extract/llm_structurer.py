@@ -170,6 +170,40 @@ MARKDOWN ACT (primele ~2500 + ultimele ~800 caractere):
 Extrage metadatele și returnează JSON.
 """
 
+# Used when act is too long for full_text_corrected — metadata only
+_SYSTEM_META_ONLY = """\
+Ești un specialist în analiza actelor normative din Monitorul Oficial al României.
+
+Primești un bloc Markdown extras dintr-un act normativ.
+Trebuie să returnezi un obiect JSON DOAR cu câmpurile de metadate (fără full_text_corrected).
+
+Reguli stricte:
+1. doc_type: EXACT unul din: LEGE, HG, OUG, ORDONANȚĂ, DECRET, DECRET_LEGE,
+   DCC, DECIZIE, ORDIN, COMUNICAT, RAPORT, ANUNT, RECTIFICARE, UNKNOWN.
+   HG = Hotărâre de Guvern. DCC = Decizie Curtea Constituțională.
+2. act_number: numărul din blocul „Nr. NNN." de la final. Doar cifre și puncte.
+   Pentru ORDIN caută și în antet „ORDIN nr. NNN din". Fără text suplimentar.
+3. act_year: anul din „București, ZZ LUNA AAAA." (sau null).
+4. issuing_authority: instituția emitentă (antet sau semnătură). Denumire oficială completă.
+5. title: titlul descriptiv din corpul actului, NU din cuprins (fără „......").
+   Începe cu „privind", „pentru", „referitoare la" etc.
+6. locality: județul menționat explicit, sau null.
+
+Returnează EXCLUSIV JSON valid, fără text suplimentar, fără markdown.
+Schema exactă:
+{
+  "doc_type": "...",
+  "act_number": "...",
+  "act_year": <int|null>,
+  "issuing_authority": "...",
+  "title": "...",
+  "locality": <"..."|null>
+}
+"""
+
+# Threshold: above this many chars, skip full_text_corrected to avoid token truncation
+_LONG_ACT_THRESHOLD = 4000
+
 
 # ── NuExtract 3 template (used when model name contains "nuextract3") ─────────
 # NuExtract 3 uses a JSON schema template passed via extra_body.chat_template_kwargs
@@ -271,8 +305,11 @@ def structure_act(
         meta["full_text_corrected"] = block.plain_text
         return meta
 
-    # Prepare prompt
+    # Prepare prompt — long acts skip full_text_corrected to avoid token truncation.
+    # Acts over _LONG_ACT_THRESHOLD chars would require the LLM to reproduce thousands
+    # of tokens verbatim, risking truncated JSON. Use source text directly instead.
     text = block.markdown
+    is_long_act = len(text) > _LONG_ACT_THRESHOLD
     head = text[:2500] if len(text) > 2500 else text
     tail = text[-800:] if len(text) > 3300 else ""
 
@@ -288,9 +325,10 @@ def structure_act(
         if _is_nuextract3(cfg["model"]):
             raw_json = _nuextract3_call(block, gazette_year, cfg)
         else:
+            system_prompt = _SYSTEM_META_ONLY if is_long_act else _SYSTEM
             raw_json = call_llm(
                 messages=[
-                    {"role": "system", "content": _SYSTEM},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": user_msg},
                 ],
                 base_url=cfg["base_url"],
@@ -313,15 +351,19 @@ def structure_act(
         )
         return meta
 
-    # Validate full_text_corrected with edit-distance guard
-    corrected = dto.full_text_corrected.strip()
+    # Validate full_text_corrected with edit-distance guard.
+    # For long acts we used metadata-only mode — full_text_corrected is empty by design.
+    corrected = (dto.full_text_corrected or "").strip()
     source = block.plain_text.strip()
-    if corrected and _edit_ratio(source, corrected) <= edit_distance_threshold:
+    if is_long_act or not corrected:
+        accepted_text = source
+        text_via = "source_plain(long_act)" if is_long_act else "source_plain(empty)"
+    elif _edit_ratio(source, corrected) <= edit_distance_threshold:
         accepted_text = corrected
         text_via = "llm_corrected"
     else:
         accepted_text = source
-        text_via = "source_plain(hallucination_rejected)" if corrected else "source_plain(empty)"
+        text_via = "source_plain(hallucination_rejected)"
 
     meta = _dto_to_meta(dto, gazette_year, accepted_text)
     meta["_via"] = f"llm_option_c+{text_via}"

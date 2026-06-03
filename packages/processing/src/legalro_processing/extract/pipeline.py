@@ -78,6 +78,9 @@ def run(
                 sumar_raw=sumar_raw, warnings=warnings,
             )
 
+    # ── Step 2.5: normalize Markdown before segmentation ─────────────────────
+    full_md = _normalize_gazette_md(full_md)
+
     # ── Step 3: segment ────────────────────────────────────────────────────────
     blocks = md_segmenter.segment_gazette_md(
         full_md,
@@ -170,6 +173,42 @@ def run(
         extracted_at=datetime.now(timezone.utc).isoformat(),
         extraction_warnings=warnings,
     )
+
+
+def _normalize_gazette_md(md: str) -> str:
+    """Clean up Docling Markdown before segmentation and LLM extraction.
+
+    Applied after md_cache load so the cache stores the raw Docling output
+    (human-inspectable) while the LLM sees the cleaned version.
+
+    Normalizations:
+    1. Strip legalro cache header comments (<!--legalro:...-->)
+    2. Collapse multiple internal spaces in body lines (PDF word-spacing artifacts)
+    3. Fix common broken diacritics: ş→ș, ţ→ț (broken_2007/2002 encoding)
+    4. Strip SUMAR table block (large TOC that wastes tokens; segmenter skips it anyway)
+    """
+    import re
+
+    # 1. Strip cache header comments
+    md = re.sub(r'<!--legalro:[^>]+-->\n?', '', md)
+
+    # 2. Fix broken diacritics (cedilla variants → comma-below, correct Romanian)
+    md = md.replace('ş', 'ș').replace('Ş', 'Ș')
+    md = md.replace('ţ', 'ț').replace('Ţ', 'Ț')
+    # Common OCR mojibake for ă
+    md = md.replace('\x82', 'ă').replace('\x92', 'ș').replace('\x93', 'ț')
+
+    # 3. Collapse multiple internal spaces in body lines (not in headings/tables)
+    lines = md.splitlines()
+    result = []
+    for line in lines:
+        if line.startswith('#') or line.startswith('|') or line.startswith('  ') or not line.strip():
+            result.append(line)
+        else:
+            result.append(re.sub(r'(?<=\S)  +(?=\S)', ' ', line))
+    md = '\n'.join(result)
+
+    return md
 
 
 def _regex_fallback(pdf_path, settings, **kwargs) -> "GazetteDocument":

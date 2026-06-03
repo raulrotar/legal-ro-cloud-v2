@@ -17,6 +17,38 @@ import httpx
 
 # ── Lenient JSON extractor ────────────────────────────────────────────────────
 
+def _escape_control_chars_in_strings(raw: str) -> str:
+    """Escape bare control characters that appear inside JSON string literals.
+
+    Models like Llama emit literal newlines/tabs inside long string values
+    (e.g. full_text_corrected) without the required JSON backslash escaping.
+    This scans the raw text character-by-character and escapes control chars
+    that appear between unescaped double-quote pairs.
+    """
+    result = []
+    in_string = False
+    escape_next = False
+    _CTRL_MAP = {'\n': '\\n', '\r': '\\r', '\t': '\\t', '\b': '\\b', '\f': '\\f'}
+    for ch in raw:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            result.append(ch)
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            result.append(ch)
+            continue
+        if in_string and ch in _CTRL_MAP:
+            result.append(_CTRL_MAP[ch])
+            continue
+        result.append(ch)
+    return ''.join(result)
+
+
 def loads_lenient(raw: str) -> Any:
     """Parse JSON from an LLM response that may contain extra tokens or fences.
 
@@ -40,6 +72,16 @@ def loads_lenient(raw: str) -> Any:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
+        pass
+
+    # Sanitize unescaped control characters inside JSON string values.
+    # Llama (and other models) sometimes emit literal \n, \t, \r inside
+    # string values without escaping them, causing "Invalid control character".
+    # Strategy: escape bare control chars that appear between JSON quotes.
+    try:
+        sanitized = _escape_control_chars_in_strings(raw)
+        return json.loads(sanitized)
+    except (json.JSONDecodeError, Exception):
         pass
 
     # Slow path: extract the first balanced {…} object
