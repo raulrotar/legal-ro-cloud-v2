@@ -64,13 +64,14 @@ def _extract_docling_md(pdf_path: str, era: Era) -> str:
 
     opts = PdfPipelineOptions()
 
-    # MPS acceleration is supported since Docling v2.33.0 (float64 bug fixed).
-    # AUTO lets Docling pick MPS on Apple Silicon, CUDA on Linux VPS, CPU elsewhere.
+    # Force CPU: MPS (Apple Silicon) doesn't support float64 required by the
+    # RT-DETRv2 layout model, causing "Stage layout failed" errors. On Linux
+    # VPS with CUDA the CUDA path works fine — use AUTO there only if needed.
     from docling.datamodel.pipeline_options import AcceleratorOptions
     from docling.datamodel.accelerator_options import AcceleratorDevice
     opts.accelerator_options = AcceleratorOptions(
         num_threads=4,
-        device=AcceleratorDevice.AUTO,
+        device=AcceleratorDevice.CPU,
     )
 
     # ── Resource discipline ───────────────────────────────────────────────────
