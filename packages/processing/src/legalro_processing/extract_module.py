@@ -46,7 +46,7 @@ def run_extraction(
     Returns the path to the written JSON file.
     """
     from legalro_processing.extract.gazette_extractor import extract_gazette, save_gazette, load_gazette
-    from legalro_processing.extraction_validator import validate_file, needs_reextraction, Severity
+    from legalro_processing.extraction_validator import validate_file, Severity
 
     path = Path(pdf_path).resolve()
     out_dir = Path(extracted_dir) if extracted_dir else Path(DEFAULT_EXTRACTED_DIR)

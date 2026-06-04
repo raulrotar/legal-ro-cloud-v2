@@ -302,9 +302,9 @@ def validate_extractions(
         --reextract \\
         --config config/local.yaml
     """
-    import os
+    import json
     from legalro_processing.extraction_validator import (
-        validate_directory, needs_reextraction, group_by_file, Severity,
+        validate_directory, group_by_file, Severity,
     )
 
     min_sev = Severity(severity.upper())

@@ -37,7 +37,6 @@ from pydantic import BaseModel, ValidationError, field_validator
 from legalro_core.llm_client import call_llm, loads_lenient
 from legalro_processing.extract.metadata import (
     AUTHORITY_PATTERNS,
-    CLOSING_BLOCK,
     BARE_NR,
     _extract_locality,
 )
@@ -306,7 +305,7 @@ def structure_act(
     Falls back to the regex path on any LLM/validation failure.
     """
     from legalro_processing.extract.metadata import extract_metadata
-    from legalro_processing.extract.md_rule_extractor import extract_rule_draft, RuleDraft
+    from legalro_processing.extract.md_rule_extractor import extract_rule_draft
     from legalro_processing.extract.segment import RawAct
 
     # Build a RawAct from plain text for the regex fallback
@@ -507,7 +506,7 @@ def _audit_diff(draft, dto) -> list[str]:
     if draft.doc_type != (dto.doc_type or ""):
         changes.append(f"doc_type: {draft.doc_type!r}→{dto.doc_type!r}")
     if str(draft.issuing_authority) != str(dto.issuing_authority or ""):
-        changes.append(f"authority: changed")
+        changes.append("authority: changed")
     return changes
 
 

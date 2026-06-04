@@ -39,7 +39,6 @@ try:
 except ImportError:
     def _strip_ls(text: str) -> str: return text  # type: ignore[misc]
 from legalro_processing.extract.md_segmenter import MdActBlock
-from legalro_processing.extract.segment import RawAct
 
 Confidence = Literal["high", "low"]
 

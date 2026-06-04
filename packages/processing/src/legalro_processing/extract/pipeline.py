@@ -96,7 +96,7 @@ def run(
             )
 
     # ── Step 2.5: normalize Markdown before segmentation ─────────────────────
-    full_md = _normalize_gazette_md(full_md)
+    full_md = _normalize_gazette_md(full_md, era)
     _t = _log(_gname, "normalize", "done", _t)
 
     # ── Step 2.6: enrich Markdown with fitz-recovered closing blocks ──────────
@@ -300,7 +300,7 @@ def run(
     )
 
 
-def _normalize_gazette_md(md: str) -> str:
+def _normalize_gazette_md(md: str, era=None) -> str:
     """Clean up Docling Markdown before segmentation and LLM extraction.
 
     Applied after md_cache load so the cache stores the raw Docling output
@@ -308,7 +308,9 @@ def _normalize_gazette_md(md: str) -> str:
 
     Normalizations:
     1. Strip legalro cache header comments (<!--legalro:...-->)
-    2. Fix common broken diacritics: ş→ș, ţ→ț (broken_2007/2002 encoding)
+    2. Era-aware mojibake repair: applies the full normalize_text table for
+       broken_2007/broken_2002 eras (handles „→ă ∫→ș ˛→ț ‚→â Ó→î etc.).
+       Falls back to the universal ş/ţ→ș/ț fixes for modern eras.
     3. Collapse multiple internal spaces in body lines (PDF word-spacing artifacts)
     4. Recover split closing blocks — when Docling places a lone "Nr. N." line
        BEFORE the institution heading that starts the next act, it belongs to the
@@ -322,9 +324,18 @@ def _normalize_gazette_md(md: str) -> str:
     # 1. Strip cache header comments
     md = re.sub(r'<!--legalro:[^>]+-->\n?', '', md)
 
-    # 2. Fix broken diacritics
-    md = md.replace('ş', 'ș').replace('Ş', 'Ș')
-    md = md.replace('ţ', 'ț').replace('Ţ', 'Ț')
+    # 2. Era-aware mojibake repair.
+    # For broken_2007/broken_2002 eras the full normalization table covers all
+    # Mac-Roman/Quark artifacts (e.g. „→ă, ∫→ș, ˛→ț, ‚→â, Ó→î, Œ→Î, √→Ă …).
+    # For modern eras only the universal ş/ţ cedilla fixes apply.
+    if era is not None:
+        from legalro_core.normalize import normalize_text as _normalize_text
+        md = _normalize_text(md, era)
+    else:
+        # Legacy call-site without era: apply universal fixes only
+        md = md.replace('ş', 'ș').replace('Ş', 'Ș')
+        md = md.replace('ţ', 'ț').replace('Ţ', 'Ț')
+    # Extra \x8x byte repairs (seen in some LlamaParse outputs)
     md = md.replace('\x82', 'ă').replace('\x92', 'ș').replace('\x93', 'ț')
 
     # 3. Collapse multiple internal spaces in body lines (not in headings/tables)

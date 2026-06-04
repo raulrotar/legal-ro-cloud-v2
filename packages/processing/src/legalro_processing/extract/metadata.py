@@ -35,6 +35,15 @@ CLOSING_BLOCK = re.compile(
 # Fallback: bare Nr. match (for very old acts without standard closing).
 BARE_NR = re.compile(r'\bNr\.\s*([\d.]+)')
 
+# Patterns indicating a referenced act number inside an abrogation or citation
+# clause — NOT the number of the act being extracted.
+# E.g. "se abrogă Ordinul … nr. 275/2003" or "Ordinul … nr. X din YYYY se abrogă"
+_ABROGATION_RE = re.compile(
+    r'(?:se\s+abroga|abroga|abrogat[ăa]?|se\s+modifica|modifica)\s'
+    r'|(?:Ordinul|Hotararea|Legea|Decizia|Decretul)\s+.*?[Nn]r\.',
+    re.IGNORECASE,
+)
+
 # Authority patterns: (display_name, short_tag, regex).
 # Order matters — most specific first.
 AUTHORITY_PATTERNS = [
@@ -207,12 +216,21 @@ def _extract_number_and_year(text: str, gazette_year: int) -> tuple[str, int]:
             except (ValueError, IndexError):
                 pass
 
-    # Last resort: bare Nr. for number, gazette year for year
+    # Last resort: bare Nr. for number, gazette year for year.
+    # Skip matches that appear inside an abrogation/reference clause
+    # (e.g. "se abrogă Ordinul nr. 275/2003") — those are the numbers of OTHER
+    # acts being referenced, not the number of the act being extracted.
     bare = list(BARE_NR.finditer(text))
-    if bare:
-        number = bare[-1].group(1).replace(".", "")
+    for m in reversed(bare):
+        # Check a window of 120 chars before this match for abrogation signals
+        window_start = max(0, m.start() - 120)
+        window = text[window_start:m.start()]
+        if _ABROGATION_RE.search(window):
+            continue  # skip — this Nr. belongs to a referenced/abrogated act
+        number = m.group(1).replace(".", "")
         return number, gazette_year
 
+    # All bare Nr. matches were in abrogation clauses — fall back to "0"
     return "0", gazette_year
 
 
