@@ -36,13 +36,9 @@ def run_query_hybrid(question: str, settings: Settings) -> str:
 
     agent = create_agent(settings)
     agentic_timeout = settings.llm.agentic_timeout
-    agentic_max_tokens = settings.llm.agentic_max_tokens
 
     async def _run_agentic():
-        result = await agent.run(
-            question,
-            model_settings={"max_tokens": agentic_max_tokens},
-        )
+        result = await agent.run(question)
         # result.usage is a method in pydantic-ai ≤1.61; a property in later versions
         usage = result.usage() if callable(result.usage) else result.usage
         _print_usage(
@@ -96,6 +92,8 @@ def run_query(question: str, settings: Settings, _retries: int = 3) -> str:
                     ],
                     "max_tokens": 2048,
                     "temperature": settings.llm.temperature,
+                    "top_k": 1,
+                    "seed": 42,
                     **({"chat_template_kwargs": {"enable_thinking": False}} if settings.llm.provider == "mlx" else {}),
                 },
                 timeout=120,
@@ -139,7 +137,12 @@ def create_agent(settings: Settings) -> Agent:
     agent = Agent(
         model=model,
         system_prompt=SYSTEM_PROMPT,
-        model_settings={"max_tokens": settings.llm.agentic_max_tokens},
+        model_settings={
+            "max_tokens": settings.llm.agentic_max_tokens,
+            "temperature": settings.llm.temperature,
+            "top_k": 1,   # greedy decoding — strongest determinism lever for Gemini
+            "seed": 42,
+        },
     )
 
     @agent.tool_plain
@@ -172,5 +175,13 @@ răspunsul este valoarea EXCLUSIV a acelei luni, nu totalul anual. \
 Dacă sursa conține un bloc structurat de forma „luna_1_ianuarie = 180 / luna_2_februarie = 830 / \
 TOTAL_AN = 4.310 (suma tuturor lunilor, NU valoarea unei luni)", atunci pentru „luna ianuarie" \
 răspunsul este 180, NU 4.310. TOTAL_AN reprezintă suma tuturor celor 12 luni, niciodată o valoare lunară.
+7. Nume proprii, cifre, sume și date: copiază-le EXACT din documentul sursă, fără a le reformula \
+sau parafraza. Nu înlocui niciun termen specific cu sinonime sau forme alternative.
+8. Când întrebarea menționează un număr de act specific (ex: nr. 117/2026), răspunde EXCLUSIV pe \
+baza acelui act. Ignoră actele adiacente cu numere diferite (ex: nr. 118/2026), chiar dacă \
+tratează același subiect sau aceeași instituție.
+9. Când documentul conține o listă numerotată, citește toate elementele listei și identifică \
+elementul relevant înainte de a răspunde. Nu te opri la primul element găsit dacă întrebarea \
+vizează un element specific.
 
 Format citare: [LEGE nr. 123/2024, Art. 5 alin. (2)]"""

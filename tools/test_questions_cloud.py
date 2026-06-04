@@ -131,7 +131,7 @@ def _score(answer: str, expected: str) -> str:
     folded_answer = fold(answer)
     hits = sum(1 for t in tokens if fold(t) in folded_answer)
     ratio = hits / len(tokens)
-    if ratio >= 0.6:
+    if ratio >= 0.5:
         return "CORECT"
     elif ratio >= 0.3:
         return "PARTIAL"

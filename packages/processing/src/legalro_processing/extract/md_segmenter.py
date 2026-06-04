@@ -131,6 +131,23 @@ def segment_gazette_md(
     # Step 6: drop artefact blocks — footnote fragments and bare category headers
     blocks = [b for b in blocks if b.plain_text.strip() and not _is_artefact(b)]
 
+    # Step 7: merge orphan blocks — blocks with fewer than 50 tokens that have no
+    # act-type header are sentence fragments from over-segmentation (e.g. a numbered
+    # list item split at a heading boundary). Absorb them into the preceding block.
+    if len(blocks) > 1:
+        merged: list[MdActBlock] = [blocks[0]]
+        for blk in blocks[1:]:
+            tokens = blk.plain_text.split()
+            if len(tokens) < 50 and not _ACT_HEADING.search(blk.plain_text[:300]):
+                prev = merged[-1]
+                merged[-1] = _make_block(
+                    prev.markdown + "\n\n" + blk.markdown,
+                    title_hint=prev.title_hint,
+                )
+            else:
+                merged.append(blk)
+        blocks = merged
+
     return blocks
 
 

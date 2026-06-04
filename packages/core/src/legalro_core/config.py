@@ -61,7 +61,7 @@ class LLMConfig(BaseSettings):
     api_key: str = Field(default="", alias="api_key")
     model: str = "gemini-2.5-flash"
     max_tokens: int = 8192
-    temperature: float = 0.1
+    temperature: float = 0.0
     agentic_max_tokens: int = 4096
     agentic_timeout: float = 90.0
 
