@@ -272,6 +272,20 @@ _ACT_BODY_SIGNAL = re.compile(
     re.IGNORECASE,
 )
 
+# Publisher/printer masthead footer — unique tokens that only appear in the
+# Monitorul Oficial R.A. footer block, NOT in real act bodies.
+# Do NOT key on bare "Monitorul Oficial" — it appears in act bodies ("se publică în MO").
+_PUBLISHER_FOOTER = re.compile(
+    r'EDITOR:\s*GUVERNUL\s+ROMÂNIEI'
+    r"|'Monitorul\s+Oficial'\s+R\.A\."  # the legal entity name with quotes
+    r"|www\.monitoruloficial\.ro"
+    r'|C\.I\.F\.\s+RO\d+'              # fiscal code
+    r'|IBAN:\s*RO\d+'                  # bank account
+    r'|Tiparul:',
+    re.IGNORECASE,
+)
+
+
 def _is_artefact(block: MdActBlock) -> bool:
     """Return True for blocks that are segmentation artefacts, not real acts."""
     text = block.plain_text.strip()
@@ -282,6 +296,12 @@ def _is_artefact(block: MdActBlock) -> bool:
 
     # Blocks that start with a footnote marker (*)
     if _FOOTNOTE_START.match(text):
+        return True
+
+    # Publisher/printer masthead footer (EDITOR, IBAN, CIF, Tiparul, URL)
+    # Require absence of act-body signal as a second gate so a real act that
+    # happens to mention the publisher is not accidentally dropped.
+    if _PUBLISHER_FOOTER.search(text) and not _ACT_BODY_SIGNAL.search(text):
         return True
 
     return False

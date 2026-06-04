@@ -14,12 +14,23 @@ Entry point: run(pdf_path, settings, gazette_context) → GazetteDocument
 """
 from __future__ import annotations
 
+import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from legalro_core.config import Settings
     from legalro_processing.extract.gazette_schema import GazetteDocument
+
+
+def _log(gazette_name: str, step: str, msg: str = "", t0: float | None = None) -> float:
+    """Emit a timestamped progress line to stderr. Returns current time."""
+    now = time.time()
+    elapsed = f" +{now - t0:.1f}s" if t0 is not None else ""
+    prefix = f"[pipeline] {gazette_name} | {step}{elapsed}"
+    print(f"{prefix}{': ' + msg if msg else ''}", file=sys.stderr, flush=True)
+    return now
 
 
 def run(
@@ -57,18 +68,25 @@ def run(
     ecfg = settings.extraction_llm
     md_dir = ecfg.md_cache_dir if ecfg else "md_cache"
     edit_thr = ecfg.edit_distance_threshold if ecfg else 0.15
+    _gname = Path(pdf_path).stem  # e.g. MO_PI_820_2007-12-03
+
+    _t = _log(_gname, "start")
 
     # ── Step 1+2: get Markdown (from cache or fresh extraction) ───────────────
     cached_md = md_cache.load(pdf_path, md_dir)
     if cached_md is not None:
         full_md = cached_md
+        _t = _log(_gname, "md_cache", "hit — skipped Docling", _t)
         warnings.append("md_cache: hit — skipped Docling/OCR")
     else:
+        _log(_gname, "md_cache", "miss — starting Docling")
         try:
             full_md = md_extractor.extract_markdown(str(pdf_path), era, settings)
             md_cache.save(pdf_path, full_md, era.value, md_dir)
+            _t = _log(_gname, "md_cache", f"Docling done, {len(full_md):,} chars", _t)
             warnings.append("md_cache: miss — extracted fresh Markdown")
         except Exception as exc:
+            _log(_gname, "md_cache", f"FAILED: {exc}")
             warnings.append(f"md_extractor failed: {exc}; falling back to regex pipeline")
             return _regex_fallback(
                 pdf_path, settings, gazette_year=gazette_year, issue_number=issue_number,
@@ -80,12 +98,33 @@ def run(
 
     # ── Step 2.5: normalize Markdown before segmentation ─────────────────────
     full_md = _normalize_gazette_md(full_md)
+    _t = _log(_gname, "normalize", "done", _t)
+
+    # ── Step 2.6: enrich Markdown with fitz-recovered closing blocks ──────────
+    from legalro_processing.extract.secondary_analyzer import FitzAnalyzer, enrich_markdown_with_fitz
+    _log(_gname, "fitz_enrich", "scanning PDF text layer")
+    try:
+        _enrich_sigs = FitzAnalyzer().recover_closing_numbers(pdf_path)
+        _t = _log(_gname, "fitz_enrich", f"{len(_enrich_sigs)} sigs recovered", _t)
+        if _enrich_sigs:
+            full_md, _n_injected = enrich_markdown_with_fitz(full_md, _enrich_sigs)
+            _t = _log(_gname, "fitz_enrich", f"injected {_n_injected} closing block(s)", _t)
+            if _n_injected:
+                warnings.append(
+                    f"md_enrichment: injected {_n_injected} missing closing block(s) "
+                    f"from PDF text layer before segmentation"
+                )
+    except Exception as _exc:
+        _log(_gname, "fitz_enrich", f"SKIPPED: {_exc}")
+        warnings.append(f"md_enrichment: skipped ({_exc})")
 
     # ── Step 3: segment ────────────────────────────────────────────────────────
+    _log(_gname, "segment", "starting")
     blocks = md_segmenter.segment_gazette_md(
         full_md,
         expected_act_count=len(sumar_entries),
     )
+    _t = _log(_gname, "segment", f"{len(blocks)} blocks", _t)
 
     if not blocks:
         warnings.append("md_segmenter: no blocks found; falling back to regex pipeline")
@@ -106,9 +145,30 @@ def run(
         elif produced_n > expected_n * 3:
             warnings.append(f"option-c over-segmentation: sumar={expected_n}, produced={produced_n}")
 
+    # ── Step 3.5: secondary analyzer — recover closing signatures from PDF ────
+    from legalro_processing.extract.secondary_analyzer import FitzAnalyzer, match_recovered_number, find_candidates
+    _recovered_sigs = []
+    try:
+        _recovered_sigs = FitzAnalyzer().recover_closing_numbers(pdf_path)
+        if _recovered_sigs:
+            warnings.append(
+                f"secondary_analyzer: recovered {len(_recovered_sigs)} closing sig(s) from PDF text layer"
+            )
+    except Exception as _exc:
+        warnings.append(f"secondary_analyzer: skipped ({_exc})")
+
+    # Per-gazette signatory counter for the positional tiebreaker.
+    # Key = normalised signatory hint string; value = how many times we have
+    # already assigned a sig to an act with that signatory in THIS gazette run.
+    # Resets for every gazette (local variable) — no cross-gazette contamination.
+    _signatory_assign_count: dict[str, int] = {}
+
     # ── Step 4: LLM structuring per act ───────────────────────────────────────
+    _log(_gname, "llm_loop", f"starting {len(blocks)} acts")
     acts: list[LegalAct] = []
     for act_idx, block in enumerate(blocks):
+        _t_act = time.time()
+        _log(_gname, f"act[{act_idx}/{len(blocks)-1}]", "rule_draft")
         # Carry a sumar title hint if available
         if act_idx < len(sumar_entries):
             block.title_hint = block.title_hint or getattr(sumar_entries[act_idx], "title", "")
@@ -116,7 +176,64 @@ def run(
         # Stage 1: deterministic rule-based draft (full-block scan)
         rule_draft = md_rule_extractor.extract_rule_draft(block, gazette_year)
 
+        # Stage 1.5: backfill act_number from secondary analyzer when draft is bad.
+        # Only fires when: number is 0/low-confidence OR matches an abrogation number.
+        # Write-once-into-empty: high-confidence Docling numbers are never overridden.
+        _needs_recovery = (
+            rule_draft.act_number == "0"
+            or rule_draft.act_number_confidence == "low"
+            or (
+                rule_draft.act_number
+                and rule_draft.abrogation_numbers
+                and rule_draft.act_number.replace(".", "") in
+                    {n.split("/")[0] for n in rule_draft.abrogation_numbers}
+            )
+        )
+        if _needs_recovery and _recovered_sigs:
+            _sig_hint = _extract_signatory_hint(block.plain_text)
+            _recovered_nr = match_recovered_number(
+                _recovered_sigs,
+                signatory_hint=_sig_hint,
+                page_hints=block.page_hints,
+                abrogation_numbers=rule_draft.abrogation_numbers,
+            )
+
+            # Positional tiebreaker: when multiple sigs share the same signatory
+            # (e.g. two consecutive ANCEX ordins both signed by Munteanu),
+            # match_recovered_number returns None to avoid guessing.  Here we
+            # fall back to positional assignment: "Nth act with this signatory
+            # gets the Nth sig sorted by page."
+            # The counter (_signatory_assign_count) is LOCAL to this gazette run
+            # and resets for every call to run() — no cross-gazette side effects.
+            if _recovered_nr is None and _sig_hint:
+                _candidates = find_candidates(
+                    _recovered_sigs,
+                    signatory_hint=_sig_hint,
+                    page_hints=block.page_hints,
+                    abrogation_numbers=rule_draft.abrogation_numbers,
+                )
+                if len(_candidates) > 1:
+                    _nth = _signatory_assign_count.get(_sig_hint, 0)
+                    if _nth < len(_candidates):
+                        _recovered_nr = _candidates[_nth].number
+                        _signatory_assign_count[_sig_hint] = _nth + 1
+
+            if _recovered_nr:
+                _prev_nr = rule_draft.act_number
+                rule_draft.act_number = _recovered_nr
+                # HIGH confidence: fitz recovered this from the PDF text layer with a
+                # confirmed all-tokens signatory match. The override guard in
+                # llm_structurer.py:388 must fire to prevent the LLM from substituting
+                # an abrogation-clause number (e.g. 275→356).
+                rule_draft.act_number_confidence = "high"
+                rule_draft.warnings.append(
+                    f"act_number recovered from PDF text layer by secondary_analyzer "
+                    f"(was: {_prev_nr!r} before recovery, signatory: {_sig_hint!r})"
+                )
+
         # Stage 2: LLM verifies and corrects the draft
+        _log(_gname, f"act[{act_idx}/{len(blocks)-1}]",
+             f"LLM call (draft nr={rule_draft.act_number!r} type={rule_draft.doc_type})")
         meta = llm_structurer.structure_act(
             block,
             gazette_year=gazette_year,
@@ -132,6 +249,10 @@ def run(
         _llm_warnings.insert(0, f"_via:{_via}")
 
         meta["_gazette_issue_number"] = issue_number
+
+        _log(_gname, f"act[{act_idx}/{len(blocks)-1}]",
+             f"done nr={meta.get('act_number')!r} via={_via.split('+')[-1]} "
+             f"+{time.time()-_t_act:.1f}s")
 
         # Build LegalAct using the existing _build_act helper
         # (handles article/annex parsing, signatories, etc.)
@@ -238,6 +359,45 @@ def _normalize_gazette_md(md: str) -> str:
     md = _MINISTER_SIG.sub(_annotate_orphaned, md)
 
     return md
+
+
+def _extract_signatory_hint(plain_text: str) -> str:
+    """Extract a signatory name fragment for secondary-analyzer context matching.
+
+    Looks for a signature attribution line near the end of the act text and
+    returns the name portion (e.g. "Cristian David" from "Ministrul internelor,
+    Cristian David"). The name may appear on the immediately next line or after
+    one blank line (both patterns appear in Docling output for long acts).
+    Falls back to empty string if none found.
+    """
+    import re
+    # Allow 0 or 1 blank lines between the title line and the person's name
+    _SIG_ATTR = re.compile(
+        r'(?:Ministrul|Ministr(?:ul|a)|Președintele|Directorul(?:\s+general)?'
+        r'|Guvernatorul|p\.\s+Ministrul|Secretarul\s+de\s+stat)[^\n]{0,120},\s*\n'
+        r'(?:\s*\n)?'          # optional blank line
+        r'([A-ZĂÂÎȘȚ][^\n]{2,60})',  # name starts with uppercase
+        re.MULTILINE,
+    )
+    # Strip the orphaned-signature HTML comment injected by _normalize_gazette_md —
+    # it sits between the attribution line and the person's name and breaks the pattern.
+    plain_text = plain_text.replace("<!-- legalro:orphaned-signature -->", "")
+
+    # Search the full plain_text — for acts with long annexes, the signatory
+    # line appears BEFORE the annex body, so tail truncation would miss it.
+    # Use the FIRST match (act signatory precedes any annex content).
+    matches = list(_SIG_ATTR.finditer(plain_text))
+    if matches:
+        name = matches[0].group(1).strip().rstrip(",;.")
+        # Cap at 3 words — the captured line may include trailing section headers
+        # like "ANEXĂ" that don't appear in the PDF sig context window.
+        words = name.split()
+        # Require at least 2 words (first + last name) — a single word or a
+        # word ending with punctuation is a malformed capture, not a real name.
+        if len(words) < 2:
+            return ""
+        return " ".join(words[:3])
+    return ""
 
 
 def _regex_fallback(pdf_path, settings, **kwargs) -> "GazetteDocument":

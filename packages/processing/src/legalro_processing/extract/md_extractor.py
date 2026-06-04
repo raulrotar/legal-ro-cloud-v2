@@ -18,6 +18,8 @@ Provider routing:
 """
 from __future__ import annotations
 
+import sys
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -55,6 +57,10 @@ def _provider(settings: "Settings | None") -> str:
 
 def _extract_docling_md(pdf_path: str, era: Era) -> str:
     """Run Docling and return the full document Markdown without any stripping."""
+    _t0 = time.time()
+    _name = Path(pdf_path).stem
+    print(f"[docling] {_name} | start (era={era.value})", file=sys.stderr, flush=True)
+
     try:
         from docling.document_converter import DocumentConverter, PdfFormatOption
         from docling.datamodel.pipeline_options import PdfPipelineOptions, AcceleratorOptions
@@ -100,10 +106,13 @@ def _extract_docling_md(pdf_path: str, era: Era) -> str:
         opts.do_table_structure = False
         opts.ocr_options = _auto_ocr_options()
 
+    print(f"[docling] {_name} | converter init done +{time.time()-_t0:.1f}s", file=sys.stderr, flush=True)
     converter = DocumentConverter(
         format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
     )
+    print(f"[docling] {_name} | convert() starting", file=sys.stderr, flush=True)
     result = converter.convert(pdf_path)
+    print(f"[docling] {_name} | convert() done +{time.time()-_t0:.1f}s", file=sys.stderr, flush=True)
     # Export before releasing the converter — keeps full_text in a plain string.
     markdown = result.document.export_to_markdown(
         escape_html=False,
@@ -118,6 +127,7 @@ def _extract_docling_md(pdf_path: str, era: Era) -> str:
     del converter
     import gc
     gc.collect()
+    print(f"[docling] {_name} | gc done, {len(markdown):,} chars +{time.time()-_t0:.1f}s", file=sys.stderr, flush=True)
 
     return markdown
 
