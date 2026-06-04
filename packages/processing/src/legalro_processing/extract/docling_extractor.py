@@ -27,7 +27,6 @@ Resource discipline:
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from legalro_core.models import Era

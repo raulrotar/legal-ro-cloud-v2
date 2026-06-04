@@ -50,7 +50,6 @@ def run(
     from legalro_processing.extract import md_cache, md_extractor, md_segmenter, llm_structurer, md_rule_extractor
     from legalro_processing.extract.gazette_schema import GazetteDocument, LegalAct
     from legalro_processing.extract.gazette_extractor import _build_act
-    from legalro_processing.extract.metadata import extract_metadata
     from legalro_processing.extract.segment import RawAct
     from datetime import datetime, timezone
 
@@ -243,7 +242,6 @@ def _normalize_gazette_md(md: str) -> str:
 def _regex_fallback(pdf_path, settings, **kwargs) -> "GazetteDocument":
     """Fall back to the standard regex-based extraction pipeline."""
     from legalro_processing.extract.gazette_extractor import extract_gazette
-    from legalro_core.config import Settings as _S
 
     # Temporarily disable extraction_llm to avoid recursion
     orig_enabled = settings.extraction_llm.enabled if hasattr(settings, "extraction_llm") else False

@@ -58,7 +58,7 @@ def load(pdf_path: str | Path, md_cache_dir: str | Path = DEFAULT_MD_CACHE_DIR) 
 
     # Strip the header lines to return clean Markdown
     lines = content.splitlines()
-    body_start = next((i for i, l in enumerate(lines) if not l.startswith("<!--legalro:")), 0)
+    body_start = next((i for i, line in enumerate(lines) if not line.startswith("<!--legalro:")), 0)
     return "\n".join(lines[body_start:])
 
 

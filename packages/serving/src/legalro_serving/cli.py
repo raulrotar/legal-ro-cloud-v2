@@ -102,7 +102,7 @@ def start():
                 console.print(".", end="", highlight=False)
                 time.sleep(1)
         else:
-            console.print(f"\n  [yellow]⚠[/yellow] LLM server not responding yet — check /tmp/legalro_mlx.log")
+            console.print("\n  [yellow]⚠[/yellow] LLM server not responding yet — check /tmp/legalro_mlx.log")
 
     console.print("\n[bold green]System is up.[/bold green] Run [bold]legalro status[/bold] to verify.")
 

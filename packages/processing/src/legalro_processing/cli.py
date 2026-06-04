@@ -142,7 +142,7 @@ def setup_indexes(
     wait: bool = typer.Option(True, help="Wait up to 120s for Atlas Search indexes to become READY."),
 ):
     """Create/update MongoDB Atlas Search + vector indexes for v2 chunk schema."""
-    import os, time
+    import os
     from pymongo import MongoClient
 
     uri = mongo or os.environ.get("MONGODB_URI", "")

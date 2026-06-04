@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import re
-import unicodedata
 from pathlib import Path
 from collections import defaultdict
 
@@ -122,17 +121,20 @@ def compare():
         for act in acts_base:
             sc, _ = score_act(act)
             s["score_base"] += sc
-            if sc == 4: s["perfect_base"] += 1
+            if sc == 4:
+                s["perfect_base"] += 1
 
         for act in acts_b:
             sc, _ = score_act(act)
             s["score_b"] += sc
-            if sc == 4: s["perfect_b"] += 1
+            if sc == 4:
+                s["perfect_b"] += 1
 
         for act in acts_c:
             sc, _ = score_act(act)
             s["score_c"] += sc
-            if sc == 4: s["perfect_c"] += 1
+            if sc == 4:
+                s["perfect_c"] += 1
             mj = mojibake_ratio(act.get("full_text", ""))
             s["mojibake_c"] += mj
             s["n_moji"] += 1
@@ -182,7 +184,6 @@ def compare():
         n_c  = s["n_acts_c"]
         pct_base = s["score_base"] / (n * 4) * 100
         pct_c    = s["score_c"]    / (n_c * 4) * 100 if n_c else 0
-        pct_b    = s["score_b"]    / (n * 4) * 100 if s["score_b"] else 0
         delta    = pct_c - pct_base
         seg      = f"{s['seg_match']}/{s['seg_total']}"
         mj_base  = s["mojibake_base"] / n * 100
@@ -234,14 +235,19 @@ def compare():
     def field_stats(tree: dict[str, dict], fnames: list[str]):
         unk = miss_auth = miss_num = bad_title = total = 0
         for fn in fnames:
-            if fn not in tree: continue
+            if fn not in tree:
+                continue
             for a in tree[fn].get("acts", []):
                 total += 1
-                if a.get("doc_type","") in ("UNKNOWN",""):  unk += 1
-                if not a.get("issuing_authority",""):        miss_auth += 1
-                if not str(a.get("act_number","")) or str(a.get("act_number","")) == "0": miss_num += 1
-                t = a.get("title","")
-                if not t or "......" in t or len(t) <= 5:   bad_title += 1
+                if a.get("doc_type", "") in ("UNKNOWN", ""):
+                    unk += 1
+                if not a.get("issuing_authority", ""):
+                    miss_auth += 1
+                if not str(a.get("act_number", "")) or str(a.get("act_number", "")) == "0":
+                    miss_num += 1
+                t = a.get("title", "")
+                if not t or "......" in t or len(t) <= 5:
+                    bad_title += 1
         return total, unk, miss_auth, miss_num, bad_title
 
     t_b, unk_b, auth_b, num_b, tit_b = field_stats(base,  common)

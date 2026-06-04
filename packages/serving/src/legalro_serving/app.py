@@ -177,7 +177,7 @@ def list_acts(
 ):
     db = get_db(settings)
 
-    match: dict = {"law_id": {"$exists": True, "$ne": None, "$ne": ""}}
+    match: dict = {"law_id": {"$exists": True, "$nin": [None, ""]}}
 
     if type:
         types = [t.strip().upper() for t in type.split(",") if t.strip()]

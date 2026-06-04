@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import re
 import statistics
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
 
 import fitz
 from legalro_core.models import Era
@@ -82,7 +80,8 @@ def extract_fitz_blocks(pdf_path, era: Era) -> list[list[Block]]:
     # appears as 'Bucure˛ti', breaking ACT_CLOSING regex and losing entire acts.
     if is_legacy:
         from legalro_core.normalize import normalize_text as _normalize_text
-        _repair = lambda t: _normalize_text(t, era)
+        def _repair(t: str) -> str:
+            return _normalize_text(t, era)
     else:
         _repair = None
 

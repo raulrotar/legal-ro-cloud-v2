@@ -122,7 +122,7 @@ def reextract_and_reingest(source_issue_id: str, pdf_path: str, label: str, sett
         json_path.unlink()
         print(f"  Deleted cached JSON: {json_path}")
     else:
-        print(f"  No cached JSON found (or already absent)")
+        print("  No cached JSON found (or already absent)")
 
     # Re-extract from PDF (applies updated segment.py logic)
     print(f"  Re-extracting {pdf_path} …")
@@ -200,7 +200,7 @@ def main():
         txt = chunk.get("text", "")
         print(f"  cuantumului total present? {'cuantumului total' in txt.lower()}")
         print(f"  sumelor lunare present?    {'sumelor lunare' in txt.lower()}")
-        print(f"  luna_1_ianuarie value: {[l for l in txt.split(chr(10)) if 'luna_1' in l][:2]}")
+        print(f"  luna_1_ianuarie value: {[ln for ln in txt.split(chr(10)) if 'luna_1' in ln][:2]}")
         break
 
     print("\nVerifying PI_311_2026 AEP chunks — should have issuing_authority set:")

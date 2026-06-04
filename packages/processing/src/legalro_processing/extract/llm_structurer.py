@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Literal, Optional, Any
+from typing import Optional, Any
 
 from pydantic import BaseModel, ValidationError, field_validator
 
@@ -41,7 +41,7 @@ from legalro_processing.extract.metadata import (
     BARE_NR,
     _extract_locality,
 )
-from legalro_processing.extract.md_segmenter import MdActBlock, _md_to_plain
+from legalro_processing.extract.md_segmenter import MdActBlock
 
 # ── DTO ───────────────────────────────────────────────────────────────────────
 

@@ -18,7 +18,7 @@ def check_mlx_embeddings():
 
 
 def check_ocrmac():
-    from ocrmac import ocrmac
+    from ocrmac import ocrmac  # noqa: F401
     print("✓ ocrmac importable")
 
 

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Sequential test of all questions against the LegalRo RAG system."""
 import subprocess
-import sys
 import re
 import time
 
@@ -140,7 +139,7 @@ _NOISE_PAT = re.compile("|".join(re.escape(n) for n in NOISE))
 
 
 def _clean(text: str) -> str:
-    lines = [l for l in text.splitlines() if not _NOISE_PAT.search(l)]
+    lines = [ln for ln in text.splitlines() if not _NOISE_PAT.search(ln)]
     return "\n".join(lines).strip()
 
 

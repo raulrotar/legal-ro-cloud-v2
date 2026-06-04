@@ -16,7 +16,6 @@ import dataclasses
 import hashlib
 import json
 import re
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -29,7 +28,6 @@ from legalro_core.normalize import normalize_pages
 from legalro_processing.extract.structure import strip_structural
 from legalro_processing.extract.sumar import parse_sumar as _parse_sumar_entries, SumarBoundary
 from legalro_processing.extract.segment import segment_acts
-from legalro_processing.extract.metadata import extract_metadata
 from legalro_processing.extract.llm_extract import (
     resolve_metadata,
     resolve_segmentation,

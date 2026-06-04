@@ -269,9 +269,7 @@ def _segment_by_delimiter(full_text: str, delimiter: str) -> list[RawAct]:
     ]
 
 
-import re as _re
-
-_CLOSING_NR = _re.compile(r'Nr\.\s*[\d.]+', _re.IGNORECASE)
+_CLOSING_NR = re.compile(r'Nr\.\s*[\d.]+', re.IGNORECASE)
 
 
 def segment_acts_from_blocks(
@@ -284,7 +282,6 @@ def segment_acts_from_blocks(
     'act_type' blocks, closing it on 'place_and_date'/'act_act_number' blocks
     that contain a closing 'Nr. NNN.' pattern.
     """
-    from legalro_processing.extract.blocks import Block  # avoid circular at module level
 
     acts = []
     current_texts: list[str] = []

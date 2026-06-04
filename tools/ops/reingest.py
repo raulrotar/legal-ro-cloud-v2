@@ -40,5 +40,5 @@ total = db.chunks.count_documents({})
 print(f"\nIngestion complete. Total chunks: {total}")
 
 print("\nRebuilding indexes...")
-from setup_indexes import ensure_indexes
+from setup_indexes import ensure_indexes  # noqa: E402
 ensure_indexes(db, settings)

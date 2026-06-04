@@ -4,120 +4,140 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  USER MACHINE                                                            │
-│                                                                          │
-│  uv run legalro <command>                                                │
-│         │                                                                │
-│  cli/app.py (Typer)  ──loads── .env                                     │
-│         │                                                                │
-│  cli/client.py (httpx)                                                   │
-│         │  Authorization: Bearer <HF_TOKEN>   ← HF proxy auth           │
-│         │  X-API-Token: <API_TOKEN>            ← app-level auth         │
-└─────────┼────────────────────────────────────────────────────────────────┘
-          │ HTTPS
-          ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│  HUGGING FACE SPACES  (Docker container, port 7860)                      │
-│                                                                          │
-│  HF proxy  ──validates── Authorization: Bearer <HF_TOKEN>               │
-│         │                                                                │
-│  api/app.py (FastAPI)                                                    │
-│    _require_auth()  ──validates── X-API-Token: <API_TOKEN>              │
-│         │                                                                │
-│    POST /query ──────────────────────────────────────────────────────►  │
-│    │  embed question  (sentence-transformers nomic-text-v1.5, in RAM)    │
-│    │  hybrid_search() ────────────────────────────────────────────────► │──► MongoDB Atlas
-│    │  run_query_hybrid() ─────────────────────────────────────────────► │──► Gemini API
-│    │  return answer                                                       │
-│         │                                                                │
-│    POST /ingest ─────────────────────────────────────────────────────►  │
-│    │  save PDF to /tmp                                                    │
-│    │  return {job_id}  (immediately)                                      │
-│    │  background task:                                                    │
-│    │    extract_module.run_extraction()  ── scanned pages ─────────────► │──► Mistral OCR API
-│    │      → GazetteDocument JSON                                          │
-│    │    ingest_module.run_ingestion()                                     │
-│    │      → chunk + embed + write ──────────────────────────────────────► │──► MongoDB Atlas
-│         │                                                                │
-│    GET /jobs/{id}  → poll job status                                     │
+│  VPS / LOCAL MACHINE  (processing)                                        │
+│                                                                           │
+│  legalro-process extract                                                  │
+│    PDF → Markdown  (Docling / LlamaParse; cached in md_cache/)           │
+│    MD  → MdActBlock list  (md_segmenter)                                  │
+│    Block → GazetteDocument JSON  (llm_structurer; cached in extracted/)  │
+│    JSON → chunks → bge-m3 embed  (build.py)                              │
+│    Emit on-disk bundle  (bundle_writer.py → out/)                        │
+│         │                                                                 │
+│  legalro-process load                                                     │
+│    Bundle → MongoDB Atlas ──────────────────────────────────────────────►│
 └──────────────────────────────────────────────────────────────────────────┘
-          │                         │                          │
-          ▼                         ▼                          ▼
-   MongoDB Atlas M0          Gemini API                 Mistral OCR API
-   (vector + BM25)        (gemini-3.1-flash-lite)      (scanned PDFs only)
-                         Stage A: native SDK
-                         Stage B: OpenAI-compat REST
+                                          │
+                                          ▼
+                                   MongoDB Atlas M0
+                               (gazettes + chunks + graph_edges)
+                                          │
+┌──────────────────────────────────────── ▼ ────────────────────────────────┐
+│  HUGGING FACE SPACES  (serving package, Docker, port 7860)                │
+│                                                                           │
+│  HF proxy  ──validates── Authorization: Bearer <HF_TOKEN>               │
+│         │                                                                 │
+│  FastAPI app  (legalro_serving.app)                                      │
+│    _require_auth()  ──validates── X-API-Token: <API_TOKEN>              │
+│         │                                                                 │
+│    POST /query ──────────────────────────────────────────────────────►   │
+│    │  embed question (bge-m3, in-container RAM)                           │
+│    │  _python_rrf_search():                                               │
+│    │    $vectorSearch (cosine, 1024-dim, top-80 candidates) ────────────►│── MongoDB Atlas
+│    │    $search (BM25 Romanian analyzer, top-80)            ────────────►│
+│    │    Python RRF merge + metadata boost                                │
+│    │  run_query_hybrid():                                                 │
+│    │    Stage A — pydantic-ai Agent (GoogleModel/Gemini, tool-calling) ──►│── Gemini API
+│    │    Stage B — single-turn RAG fallback (httpx, OpenAI-compat)  ─────►│
+│    │  return QueryResponse {answer, sources, latency_ms, chunks_used}    │
+│         │                                                                 │
+│    GET /acts        — paginated act listing (aggregation on chunks)       │
+│    GET /acts/{id}   — single act detail                                   │
+│    GET /health      — MongoDB ping                                        │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Components
+## Packages
 
-### CLI (`src/legalro/cli/`)
+### `legalro-core` (`packages/core/`)
 
-- `app.py` — Typer commands: `query`, `chat`, `ingest`, `status`, `start`, `stop`
-- `client.py` — Thin httpx wrapper. Sends two auth headers per request; polls `/jobs/{id}` after ingest
+Shared contract imported by all other packages. Contains no ML-heavy dependencies.
 
-When `LEGALRO_API_URL` is set in `.env`, all commands default to remote mode. Pass `--local` to run in-process.
+| Module | Role |
+|---|---|
+| `config.py` | `Settings` dataclass; YAML + env override loader |
+| `schema.py` | Version stamps, collection names, deterministic `_id` derivation |
+| `models.py` | `Era` enum: `SCANNED / HYBRID / MODERN / BROKEN_2002 / BROKEN_2007` |
+| `store.py` | MongoDB connection pool (`get_db`) |
+| `embeddings.py` | bge-m3 embed wrapper; `embed_texts` / `embed_batch` |
+| `normalize.py` | Diacritics, mojibake repair, BM25 text normalization |
+| `bundle.py` | On-disk bundle read helpers (manifest, checksums, JSONL.gz) |
+| `retrieval/search.py` | Hybrid search: `$vectorSearch` + `$search` + Python RRF + metadata boost |
+| `retrieval/context.py` | Parent-doc expansion + context string assembly |
 
-### API server (`src/legalro/api/app.py`)
+### `legalro-processing` (`packages/processing/`)
 
-FastAPI app running on port 7860 inside the HF Spaces Docker container.
+VPS/batch package. Handles the entire extraction → embedding → load pipeline.
+
+**CLI: `legalro-process`**
+
+| Command | Description |
+|---|---|
+| `extract` | Stage A: PDF → bundle (full pipeline) |
+| `extract-json` | PDF → GazetteDocument JSON only (no embeddings) |
+| `load` | Stage B: bundle → MongoDB |
+| `setup-indexes` | Create/update Atlas Search + vector indexes |
+| `reset-db` | Drop all collections |
+
+**Extraction pipeline (two modes):**
+
+```
+Option C (default, higher accuracy):
+  PDF → Docling/LlamaParse → full Markdown → md_cache/
+  Markdown → MdActBlock list (md_segmenter)
+  MdActBlock → LLM structured JSON (llm_structurer; hallucination-guarded)
+  → GazetteDocument → extracted/
+
+Option A fallback (regex-only):
+  PDF → era detection → text extraction → sumar parsing
+  → act segmentation → metadata regex → GazetteDocument
+```
+
+**Era detection** classifies each gazette as:
+- `SCANNED` — image-only scans; routed to LlamaParse or Mistral OCR
+- `HYBRID` — mix of digital text and scanned facsimile pages
+- `BROKEN_2002` / `BROKEN_2007` — mojibake encoding from early digital era
+- `MODERN` — clean born-digital PDFs; extracted with Docling
+
+**Build stage (`prepare/build.py`):**
+- Deterministic `_id` / `chunk_id` / `act_id` from `schema.py`
+- Modality + embedding_version + publication_date facets on every chunk
+- `act_full_text` capped at 12 000 chars for parent-doc retrieval
+
+**Load stage (`loader.py`):**
+- Idempotent: `UpdateOne` upserts via deterministic `_id`s
+- Resumable: `.load_state.json` tracks loaded docs
+- Works identically against Atlas Local (Docker) and Atlas M0
+
+### `legalro-serving` (`packages/serving/`)
+
+Read-only FastAPI app deployed to HF Spaces. Imports only `legalro-core` — no Docling, no embedding batch code.
 
 | Endpoint | Auth | Mode | Description |
 |---|---|---|---|
 | `GET /health` | none | sync | MongoDB ping |
-| `POST /query` | required | sync | Embed → search → generate |
-| `POST /ingest` | required | async | Upload PDF → background job |
-| `GET /jobs/{id}` | required | sync | Poll job status |
-| `POST /extract` | required | sync | PDF → JSON (no DB write) |
-| `POST /ingest-json` | required | async | JSON → MongoDB (background) |
+| `POST /query` | required | sync | Embed → hybrid search → Gemini → answer |
+| `GET /acts` | required | sync | Paginated act listing with filters |
+| `GET /acts/{id}` | required | sync | Single act detail |
 
-**Auth:** `X-API-Token` header checked against `API_TOKEN` env var. If `API_TOKEN` is unset, auth is skipped (dev mode).
-
-### Ingestion pipeline (`src/legalro/ingestion/`)
-
-Two-phase design with a JSON handoff:
-
-```
-Phase 1 — extract_module.run_extraction()
-  PDF → era detection → text extraction → act segmentation → metadata → GazetteDocument → JSON
-
-Phase 2 — ingest_module.run_ingestion()
-  JSON → SHA-256 dedup → chunk → embed → MongoDB (gazettes, acts, chunks collections)
-```
-
-`pipeline.process_gazette()` is a thin orchestrator that calls both phases in sequence. The `--local` CLI path calls the orchestrator directly; the remote path uploads the PDF and the server runs both phases.
-
-**Era detection** classifies each gazette as one of:
-- `SCANNED` — image-only scans; routed to Mistral OCR (cloud) or ocrmac (local)
-- `HYBRID` — mix of digital text and scanned facsimile pages
-- `BROKEN_2002` / `BROKEN_2007` — mojibake encoding from early digital era
-- `MODERN` — clean born-digital PDFs; extracted with PyMuPDF
-
-### Retrieval (`src/legalro/retrieval/`)
-
-Hybrid search combining two MongoDB Atlas indexes on the `chunks` collection:
-
-- `$vectorSearch` — ANN cosine search on 768-dim nomic-embed vectors, top-40 candidates
-- `$search` — BM25 full-text search with Romanian analyzer on `text` + `title` fields, top-40 candidates
-- RRF merge — Reciprocal Rank Fusion with weights: text 0.7, vector 0.3
-- Metadata boost — exact act-type match scores higher
-
-Results are expanded to parent document context before being passed to the LLM.
-
-### Generation (`src/legalro/generation/agent.py`)
+**Generation (`generation.py`):**
 
 Two-stage answering:
+1. **Stage A (agentic)** — pydantic-ai `Agent` with `search_law` tool; up to 3 retrieval calls; uses `GoogleModel` + `GoogleProvider` for reliable tool-calling
+2. **Stage B (single-turn)** — direct RAG via httpx; fallback on timeout / error / MLX provider
 
-- **Stage A** (agentic) — pydantic-ai `Agent` with a `search_law` tool; issues up to 3 retrieval calls, refines query based on intermediate results. Uses `GeminiModel` + `GoogleProvider` (native Gemini SDK) — required for reliable tool-calling support.
-- **Stage B** (single-turn) — direct RAG; used as fallback or when `--no-agentic` is passed. Calls the Gemini REST API via OpenAI-compatible endpoint. Also handles MLX locally (Stage A is skipped for MLX since its OpenAI-compat server does not support function calling).
+**Auth:** `X-API-Token` header vs `API_TOKEN` env var. If `API_TOKEN` is unset, auth is skipped (dev mode).
 
-Both stages target `gemini-3.1-flash-lite` in cloud mode.
+### `legalro-dashboard` (`packages/dashboard/`)
 
-### Embedding (`src/legalro/providers/embeddings.py`)
+Read-only observability FastAPI app. Imports only `legalro-core`.
 
-`sentence-transformers` with `nomic-ai/nomic-embed-text-v1.5` (768 dimensions, matryoshka). Runs in the HF Spaces container RAM on CPU. Local mode can use MLX embedding models on Apple Silicon.
+| Endpoint | Description |
+|---|---|
+| `GET /health` | MongoDB ping |
+| `GET /runs` | Per-batch processing stats (from `COLL_RUNS`) |
+| `GET /coverage` | Issues with extraction warnings (QA worklist) |
 
 ---
 
@@ -125,14 +145,58 @@ Both stages target `gemini-3.1-flash-lite` in cloud mode.
 
 ```
 gazettes collection
-  _id, sha256, filename, issue_number, date, source_pdf, ...
+  _id             MO_PI_{issue}_{year}  (deterministic)
+  issue_number, part, date, year, era, modality
+  filename, sha256, page_count, act_count
+  schema_version, pipeline_version
+  sumar[]         [{act_number, doc_type, title, page_start, page_end}]
+  extraction_warnings[]
 
-acts collection
-  _id, gazette_id, act_type, act_number, year, authority, title, full_text, ...
+chunks collection  (retrieval unit)
+  _id             {issue_id}::act-{N}::chunk-{N}  (deterministic)
+  source_issue_id, act_index_in_issue, law_id
+  document_type, act_number, act_year, title, issuing_authority
+  modality, publication_date, locality
+  chunk_type      preamble | article
+  article_number, alineat, litera, full_path
+  text, text_normalized, text_embedded
+  act_full_text   (capped at 12 000 chars — for parent-doc retrieval)
+  embedding[1024] (bge-m3 cosine)
+  embedding_version, embedding_model, embedding_dim, tokens
+  indexes:
+    chunks_vector   ($vectorSearch — 1024-dim cosine + filter fields)
+    chunks_search_ro ($search — BM25 Romanian analyzer on text/title)
 
-chunks collection
-  _id, act_id, gazette_id, text, embedding[768], chunk_index, ...
-  indexes: chunks_vector ($vectorSearch), chunks_search_ro ($search BM25)
+graph_edges collection
+  edge_id, source_law_id, target_law_id, edge_type, gazette_id
+
+runs collection
+  started_at, finished_at, ok, failed, coverage_min, ...
+```
+
+---
+
+## Hybrid search
+
+```
+query string
+    │
+    ├── embed_texts([query], bge-m3)  →  query_embedding[1024]
+    │
+    ├── $vectorSearch  numCandidates=200, limit=80  →  vector_results (by cosine)
+    │
+    ├── $search chunks_search_ro  limit=80          →  text_results   (by BM25)
+    │
+    ├── Python RRF merge
+    │     score = vector_weight / (rrf_k + rank) + text_weight / (rrf_k + rank)
+    │     defaults: vector_weight=0.3, text_weight=0.7, rrf_k=60
+    │
+    ├── metadata boost (applied BEFORE top-N cutoff)
+    │     +0.01  exact act_number match
+    │     +0.005 exact act_year match
+    │     +0.15  exact MO issue + year match  (15× multiplier)
+    │
+    └── top-N (default 20)  →  parent-doc context assembly  →  LLM
 ```
 
 ---
@@ -144,13 +208,11 @@ Client                   HF proxy                 FastAPI app
   │                          │                         │
   │  Authorization: Bearer   │                         │
   │    <HF_TOKEN>  ─────────►│ validates HF token      │
-  │  X-API-Token:            │  ──forwards request────►│
-  │    <API_TOKEN>           │                         │ checks X-API-Token
+  │  X-API-Token:            │                         │
+  │    <API_TOKEN>           │  ──forwards request────►│ checks X-API-Token
   │                          │                         │  vs API_TOKEN env var
   │◄─────────────────────────────────────────────────── response
 ```
-
-Two separate tokens, two separate headers — no conflict.
 
 ---
 
@@ -160,17 +222,30 @@ Two separate tokens, two separate headers — no conflict.
 git push origin main
         │
         ▼
-GitHub Actions (.github/workflows/deploy.yml)
-        │  git push hf main --force  (using HF write token)
+GitHub Actions (.github/workflows/deploy-serving.yml)
+        │  git push hf main --force  (HF write token)
         ▼
 HF Spaces git repo
-        │  detects push → rebuilds Docker image
+        │  detects push → rebuilds Docker image (serving package only)
         ▼
-Container running FastAPI on port 7860
-        │  reads secrets from HF Space settings
-        │  MONGODB_URI, GEMINI_API_KEY, MISTRAL_API_KEY, API_TOKEN
+Container (FastAPI on port 7860)
+        │  reads secrets: MONGODB_URI, GEMINI_API_KEY, API_TOKEN
         ▼
 Live at https://rraul99-legalro.hf.space
 ```
 
-Secrets never touch the git repo or the Docker image — they are injected at container start by HF Spaces.
+Secrets never touch the git repo or the Docker image — injected at container start by HF Spaces.
+
+---
+
+## Version stamps
+
+Defined in `legalro_core/schema.py` and stamped on every written document:
+
+| Stamp | Bump when | Consequence |
+|---|---|---|
+| `SCHEMA_VERSION` | Field shapes change | Full re-extraction + re-ingest |
+| `PIPELINE_VERSION` | Extraction logic changes | Full re-extraction + re-ingest |
+| `EMBEDDING_VERSION` | Chunker or embedding model changes | Re-embed only |
+
+Current: `SCHEMA_VERSION=2.0.0`, `PIPELINE_VERSION=2.0.0`, `EMBEDDING_VERSION=chunker-2.0+bge-m3-1024`

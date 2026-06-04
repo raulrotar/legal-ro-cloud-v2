@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from legalro_processing.extract.blocks import Block, is_full_width, is_full_width_bbox, PAGE_WIDTH
+from legalro_processing.extract.blocks import Block, is_full_width, PAGE_WIDTH
 
 
 # ---------------------------------------------------------------------------

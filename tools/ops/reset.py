@@ -42,7 +42,7 @@ def confirm(msg: str, yes: bool) -> None:
 def drop_db(db) -> None:
     print("── Dropping MongoDB collections ────────────────────────────────")
     for coll in ("chunks", "gazettes", "acts"):
-        result = db[coll].drop()
+        db[coll].drop()
         print(f"   dropped: {coll}")
     print()
 
@@ -168,7 +168,7 @@ def wait_for_indexes(db, timeout: int = 120) -> None:
         status_str = "  ".join(f"{n}={s}" for n, s in sorted(statuses.items()))
         print(f"   {status_str}", end="\r", flush=True)
         if not pending:
-            print(f"\n   All indexes READY ✓")
+            print("\n   All indexes READY ✓")
             return
         time.sleep(5)
     print(f"\n   ⚠  Timed out after {timeout}s — indexes may still be building.")
@@ -190,7 +190,7 @@ def main() -> None:
 
     action = "Re-ingest only (keep extracted/ JSONs)" if args.skip_extract else "Full reset (drop DB + delete extracted/ JSONs + re-ingest)"
     print("══════════════════════════════════════════════════════════════════")
-    print(f"  LegalRo Reset")
+    print("  LegalRo Reset")
     print(f"  Mode    : {action}")
     print(f"  Laws dir: {laws_dir}  ({len(pdfs)} PDFs)")
     print(f"  Config  : {config_path}")

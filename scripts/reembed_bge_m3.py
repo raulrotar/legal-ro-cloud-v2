@@ -25,7 +25,7 @@ if not MONGODB_URI:
     sys.exit("ERROR: MONGODB_URI env var is required")
 
 print(f"Connecting to MongoDB... (db={DB_NAME})")
-from pymongo import MongoClient, UpdateOne
+from pymongo import MongoClient, UpdateOne  # noqa: E402
 
 client = MongoClient(MONGODB_URI)
 db = client[DB_NAME]
@@ -37,7 +37,7 @@ if DRY_RUN:
     print("DRY_RUN=1 — no writes will be performed")
 
 print("Loading BAAI/bge-m3 model...")
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer  # noqa: E402
 
 model = SentenceTransformer("BAAI/bge-m3")
 model.max_seq_length = 8192

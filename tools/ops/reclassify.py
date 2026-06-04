@@ -7,8 +7,7 @@ This fixes Q11 and Q29 without requiring a full re-ingestion.
 """
 import sys
 from pathlib import Path
-from dataclasses import dataclass
-from pymongo import UpdateMany, UpdateOne
+from pymongo import UpdateMany
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
