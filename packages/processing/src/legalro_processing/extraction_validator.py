@@ -65,6 +65,9 @@ MIN_FULL_TEXT = 80   # chars; acts shorter than this are suspicious
 _REQUIRES_BODY = {"HG", "OUG", "ORDONANȚĂ", "DECRET", "DECRET_LEGE",
                   "LEGE", "DCC", "DECIZIE", "ORDIN"}
 
+# doc types that legitimately have no own act number (communiqués, notices, corrections)
+_NO_NUMBER_TYPES = {"COMUNICAT", "RECTIFICARE", "ANUNT", "ANUNȚ"}
+
 # Numbers that appear very frequently in legal references (years, common refs)
 # and should not be used as act_numbers
 _SUSPICIOUS_NUMBERS = {"2003", "2005", "2006", "2007", "2008", "2009",
@@ -162,9 +165,12 @@ def _validate_gazette(gazette: dict, json_path: Path) -> list[Issue]:
 
         # ACT_NUMBER_ZERO — explicit "not found" marker set by extraction
         if act_nr == "0":
+            # COMUNICAT/RECTIFICARE/ANUNT legitimately have no own number → downgrade to INFO
+            sev = Severity.INFO if doc_type in _NO_NUMBER_TYPES else Severity.ERROR
             issues.append(_issue(
-                "ACT_NUMBER_ZERO", Severity.ERROR, gazette_id, json_path, idx, act_nr, doc_type,
-                "act_number is '0' — closing signature not found during extraction",
+                "ACT_NUMBER_ZERO", sev, gazette_id, json_path, idx, act_nr, doc_type,
+                "act_number is '0' — closing signature not found during extraction"
+                + (" (expected: this doc_type has no own number)" if sev == Severity.INFO else ""),
             ))
 
         # ACT_NUMBER_EMPTY — empty string: usually an annex; flag as WARNING only

@@ -211,7 +211,7 @@ Returnează EXCLUSIV JSON valid:
 """
 
 # Threshold: above this many chars, skip full_text_corrected to avoid token truncation
-_LONG_ACT_THRESHOLD = 4000
+_LONG_ACT_THRESHOLD = 2000  # lowered: draft_block adds tokens, so less room for full_text_corrected
 
 
 # ── NuExtract 3 template (used when model name contains "nuextract3") ─────────

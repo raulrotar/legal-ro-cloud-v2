@@ -34,6 +34,10 @@ from legalro_processing.extract.metadata import (
     _extract_locality,
     _extract_title,
 )
+try:
+    from legalro_processing.extract.roles import strip_letterspacing as _strip_ls
+except ImportError:
+    def _strip_ls(text: str) -> str: return text  # type: ignore[misc]
 from legalro_processing.extract.md_segmenter import MdActBlock
 from legalro_processing.extract.segment import RawAct
 
@@ -161,10 +165,13 @@ def extract_rule_draft(block: MdActBlock, gazette_year: int) -> RuleDraft:
 
 def _extract_doc_type(plain_text: str) -> tuple[str, Confidence]:
     header = plain_text[:800]
+    # Normalize letterspacing line-by-line (mirrors metadata.py:116-118).
+    # Catches "D E C R E T" → "DECRET" in Docling output for born-digital PDFs.
+    header_norm = "\n".join(_strip_ls(line) for line in header.split("\n"))
     for atype, pattern in ACT_TYPE_HEADERS:
-        if pattern.search(header):
+        if pattern.search(header_norm):
             return atype, "high"
-    if "CADASTRU" in header[:400]:
+    if "CADASTRU" in header_norm[:400]:
         return "ORDIN", "high"
     return "UNKNOWN", "low"
 

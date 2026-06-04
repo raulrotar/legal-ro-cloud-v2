@@ -128,7 +128,10 @@ def segment_gazette_md(
             if fallback and abs(len(fallback) - expected_act_count) < abs(len(blocks) - expected_act_count):
                 blocks = fallback
 
-    return [b for b in blocks if b.plain_text.strip()]
+    # Step 6: drop artefact blocks — footnote fragments and bare category headers
+    blocks = [b for b in blocks if b.plain_text.strip() and not _is_artefact(b)]
+
+    return blocks
 
 
 # ── Letterspacing normalization ───────────────────────────────────────────────
@@ -252,6 +255,56 @@ def _split_multi_closing(blocks: list[MdActBlock]) -> list[MdActBlock]:
         if remainder:
             result.append(_make_block(remainder))
     return result
+
+
+# ── Artefact detection ────────────────────────────────────────────────────────
+
+# Blocks starting with a footnote marker (*) are page-footer fragments that
+# Docling placed on the wrong side of an act boundary — not standalone acts.
+_FOOTNOTE_START = re.compile(r'^\s*\*\)', re.MULTILINE)
+
+# Category-header-only blocks: letterspaced or plain ALL-CAPS category lines
+# (e.g. "A C T E  A L E  P A R T I D E L O R  P O L I T I C E") with no
+# recognisable act body beneath them.
+_ACT_BODY_SIGNAL = re.compile(
+    r'Art\.\s*\d+|Articol|având\s+în\s+vedere|în\s+temeiul|'
+    r'hotărăşte|dispune|emite|se\s+abrog|se\s+aprobă',
+    re.IGNORECASE,
+)
+
+# Publisher/printer masthead footer — unique tokens that only appear in the
+# Monitorul Oficial R.A. footer block, NOT in real act bodies.
+# Do NOT key on bare "Monitorul Oficial" — it appears in act bodies ("se publică în MO").
+_PUBLISHER_FOOTER = re.compile(
+    r'EDITOR:\s*GUVERNUL\s+ROMÂNIEI'
+    r"|'Monitorul\s+Oficial'\s+R\.A\."  # the legal entity name with quotes
+    r"|www\.monitoruloficial\.ro"
+    r'|C\.I\.F\.\s+RO\d+'              # fiscal code
+    r'|IBAN:\s*RO\d+'                  # bank account
+    r'|Tiparul:',
+    re.IGNORECASE,
+)
+
+
+def _is_artefact(block: MdActBlock) -> bool:
+    """Return True for blocks that are segmentation artefacts, not real acts."""
+    text = block.plain_text.strip()
+
+    # Very short blocks with no act-body signal
+    if len(text) < 150 and not _ACT_BODY_SIGNAL.search(text):
+        return True
+
+    # Blocks that start with a footnote marker (*)
+    if _FOOTNOTE_START.match(text):
+        return True
+
+    # Publisher/printer masthead footer (EDITOR, IBAN, CIF, Tiparul, URL)
+    # Require absence of act-body signal as a second gate so a real act that
+    # happens to mention the publisher is not accidentally dropped.
+    if _PUBLISHER_FOOTER.search(text) and not _ACT_BODY_SIGNAL.search(text):
+        return True
+
+    return False
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
