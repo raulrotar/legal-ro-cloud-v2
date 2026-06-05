@@ -72,11 +72,20 @@ _DECIZIE_HEADER_NR = re.compile(
     re.MULTILINE,
 )
 
-# Abrogation: "Ordinul/Decizia/Hotărârea nr. NNN/YYYY ... se abrogă"
-# or "se abrogă ... nr. NNN/YYYY"
+# Abrogation/modification: "Ordinul/Decizia nr. NNN/YYYY ... se abrogă/modifică/completează"
+# or the reverse order.  All four verbs indicate a *referenced* act, not the current one.
 _ABROGATION_NR = re.compile(
-    r'[Nn][Rr]\.\s*([\d.]+)/(\d{4})\b.{0,400}?se\s+abrog[ăa]'
-    r'|se\s+abrog[ăa].{0,400}?[Nn][Rr]\.\s*([\d.]+)/(\d{4})\b',
+    r'[Nn][Rr]\.\s*([\d.]+)/(\d{4})\b.{0,400}?'
+    r'se\s+(?:abrog[ăa]|modific[ăa]|complet[eă]|înlocuie[șs]te)'
+    r'|se\s+(?:abrog[ăa]|modific[ăa]|complet[eă]|înlocuie[șs]te)'
+    r'.{0,400}?[Nn][Rr]\.\s*([\d.]+)/(\d{4})\b',
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Preamble citations: "în temeiul/baza/potrivit/conform ... nr. NNN" — these are
+# *legal basis* references, not the act's own number.
+_PREAMBLE_CITATION = re.compile(
+    r'(?:în\s+temeiul|în\s+baza|potrivit|conform)\s+.{0,200}?[Nn][Rr]\.\s*([\d.]+)',
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -111,6 +120,7 @@ def extract_rule_draft(block: MdActBlock, gazette_year: int) -> RuleDraft:
         plain_text, gazette_year, doc_type
     )
     abrogation_numbers = _find_abrogation_numbers(plain_text)
+    preamble_numbers   = _find_preamble_numbers(plain_text)
     authority_name, auth_conf = _extract_authority(plain_text)
     title    = block.title_hint or _extract_title(plain_text, doc_type)
     locality = _extract_locality(plain_text) or None
@@ -119,8 +129,13 @@ def extract_rule_draft(block: MdActBlock, gazette_year: int) -> RuleDraft:
 
     if abrogation_numbers:
         warnings.append(
-            f"abrogation-clause numbers found — must NOT be used as act_number: "
+            f"abrogation/modification-clause numbers found — must NOT be used as act_number: "
             f"{abrogation_numbers}"
+        )
+    if preamble_numbers:
+        warnings.append(
+            f"preamble legal-basis numbers found (în temeiul/baza …) — "
+            f"must NOT be used as act_number: {preamble_numbers}"
         )
 
     if act_number == "0":
@@ -211,12 +226,34 @@ def _extract_number_full(
     # 3. Standalone Nr. line in last 5000 chars — catches acts where the
     #    signature is mid-document (before a long annex) and CLOSING_BLOCK
     #    fails because the date is on a different line from Nr.
+    #    Guard: skip candidates that come from preamble citations (în temeiul/baza …)
+    #    since those are legal-basis references, not the act's own number.
     tail = plain_text[-5000:]
     m = _NR_STANDALONE.search(tail)
     if m:
-        return m.group(1).rstrip("."), gazette_year, "low"
+        candidate = m.group(1).replace(".", "")
+        preamble_nums = _find_preamble_numbers(plain_text)
+        if candidate not in preamble_nums:
+            return m.group(1).rstrip("."), gazette_year, "low"
 
     return "0", gazette_year, "low"
+
+
+def _find_preamble_numbers(plain_text: str) -> list[str]:
+    """Collect act numbers cited in preamble legal-basis clauses.
+
+    These are *references* to enabling legislation (în temeiul Legii nr. X,
+    în baza OUG nr. Y, potrivit HG nr. Z) and must NOT be used as the current
+    act's own number.
+    """
+    seen: set[str] = set()
+    results: list[str] = []
+    for m in _PREAMBLE_CITATION.finditer(plain_text):
+        nr = m.group(1).replace(".", "")
+        if nr and nr not in seen:
+            seen.add(nr)
+            results.append(nr)
+    return results
 
 
 def _find_abrogation_numbers(plain_text: str) -> list[str]:

@@ -135,8 +135,10 @@ REGULI DE VERIFICARE:
    - [LOW / "0"]: nu s-a găsit blocul de semnătură. CAUTĂ în textul actului:
      • Blocul „București, ZZ LUNA AAAA.\\nNr. NNN." (poate fi pe rânduri separate).
      • Sau antetul „ORDIN nr. NNN din..." / „DECIZIE nr. NNN/AAAA".
-     • ATENȚIE: numerele din clauze de abrogare („Ordinul nr. X/AAAA ... se abrogă")
+     • ATENȚIE: numerele din clauze de abrogare/modificare („Ordinul nr. X/AAAA ... se abrogă/modifică")
        NU sunt numărul actului curent — ignoră-le complet.
+     • ATENȚIE: numerele din preambul („în temeiul/baza … nr. X") sunt temei legal,
+       NU numărul actului curent — ignoră-le complet.
      • Dacă nu găsești nimic sigur, returnează "0".
 3. act_year [HIGH/LOW]: anul din blocul de semnătură sau din antet. Null dacă lipsește.
 4. issuing_authority [HIGH]: păstrează dacă regexul l-a găsit; completează dacă lipsește.
@@ -191,7 +193,8 @@ REGULI:
 2. act_number:
    - [HIGH]: păstrează dacă nu e evident greșit.
    - [LOW / "0"]: caută „București, DATA.\\nNr. NNN." sau „ORDIN nr. NNN din".
-     IGNORĂ numerele din clauze de abrogare („nr. X/AAAA ... se abrogă").
+     IGNORĂ numerele din clauze de abrogare/modificare („nr. X/AAAA ... se abrogă/modifică")
+     și numerele din preambul („în temeiul/baza … nr. X").
      Dacă nu găsești, returnează "0".
 3. act_year: din blocul de semnătură sau antet (null dacă lipsește).
 4. issuing_authority [HIGH]: păstrează; completează dacă lipsește.
@@ -215,7 +218,7 @@ _LONG_ACT_THRESHOLD = 2000  # lowered: draft_block adds tokens, so less room for
 
 # ── NuExtract 3 template (used when model name contains "nuextract3") ─────────
 # NuExtract 3 uses a JSON schema template passed via extra_body.chat_template_kwargs
-# instead of a system prompt. Works with vLLM; mlx_lm.server uses standard prompts.
+# instead of a system prompt. Works with vLLM; Ollama uses standard prompts.
 
 _NUEXTRACT3_TEMPLATE = {
     "doc_type": ["LEGE", "HG", "OUG", "ORDONANȚĂ", "DECRET", "DECRET_LEGE",

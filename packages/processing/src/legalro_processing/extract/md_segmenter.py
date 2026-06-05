@@ -103,8 +103,18 @@ class MdActBlock:
 def segment_gazette_md(
     full_markdown: str,
     expected_act_count: int = 0,
+    era=None,
 ) -> list[MdActBlock]:
-    """Split a full-gazette Markdown into per-act blocks."""
+    """Split a full-gazette Markdown into per-act blocks.
+
+    Args:
+        full_markdown: The full gazette Markdown text.
+        expected_act_count: Number of acts from the sumar (0 = unknown).
+        era: Optional Era enum value.  When provided and the era indicates
+             scanned/OCR content (era.value contains "scanned"), the orphan-merge
+             token threshold is lowered to 20 (from 50) to avoid merging real
+             short acts that appear in noisy 1989-era text.
+    """
     # Step 1: normalize letterspacing in headings
     normalized = _normalize_md_headings(full_markdown)
 
@@ -120,10 +130,11 @@ def segment_gazette_md(
     if not blocks:
         blocks = [_make_block(normalized)]
 
-    # Step 5: sumar cross-check
+    # Step 5: sumar cross-check — tightened upper bound (2.0 instead of 4.0) so
+    # 2-4× over-splits also trigger the closing-block fallback comparison.
     if expected_act_count >= 2:
         ratio = len(blocks) / expected_act_count
-        if ratio < 0.3 or ratio > 4.0:
+        if ratio < 0.3 or ratio > 2.0:
             fallback = _split_by_closing(normalized)
             if fallback and abs(len(fallback) - expected_act_count) < abs(len(blocks) - expected_act_count):
                 blocks = fallback
@@ -131,14 +142,25 @@ def segment_gazette_md(
     # Step 6: drop artefact blocks — footnote fragments and bare category headers
     blocks = [b for b in blocks if b.plain_text.strip() and not _is_artefact(b)]
 
-    # Step 7: merge orphan blocks — blocks with fewer than 50 tokens that have no
+    # Step 7: merge orphan blocks — blocks with fewer than N tokens that have no
     # act-type header are sentence fragments from over-segmentation (e.g. a numbered
     # list item split at a heading boundary). Absorb them into the preceding block.
+    #
+    # Era-aware threshold: scanned (1989) content is noisier; lower the threshold
+    # so short real acts are not accidentally merged into a neighbour.
+    #
+    # Guard fix: check the raw MARKDOWN first line (which still has '#' heading
+    # markers) instead of plain_text (which has markers stripped, making the
+    # `^#{1,3}\s+`-anchored _ACT_HEADING pattern unmatchable against it).
+    _era_val = getattr(era, "value", "") or ""
+    _orphan_threshold = 20 if "scanned" in _era_val.lower() else 50
     if len(blocks) > 1:
         merged: list[MdActBlock] = [blocks[0]]
         for blk in blocks[1:]:
             tokens = blk.plain_text.split()
-            if len(tokens) < 50 and not _ACT_HEADING.search(blk.plain_text[:300]):
+            _first_md_line = blk.markdown.splitlines()[0] if blk.markdown else ""
+            _has_act_heading = bool(_ACT_HEADING.match(_first_md_line))
+            if len(tokens) < _orphan_threshold and not _has_act_heading:
                 prev = merged[-1]
                 merged[-1] = _make_block(
                     prev.markdown + "\n\n" + blk.markdown,

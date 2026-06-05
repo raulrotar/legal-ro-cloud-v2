@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from legalro_core.act_number import NO_NUMBER_DOC_TYPES
+
 if TYPE_CHECKING:
     from legalro_core.config import Settings
     from legalro_processing.extract.gazette_schema import GazetteDocument
@@ -65,7 +67,7 @@ def run(
     from datetime import datetime, timezone
 
     ecfg = settings.extraction_llm
-    md_dir = ecfg.md_cache_dir if ecfg else "md_cache"
+    md_dir = ecfg.md_cache_dir if ecfg else "db/md_cache"
     edit_thr = ecfg.edit_distance_threshold if ecfg else 0.15
     _gname = Path(pdf_path).stem  # e.g. MO_PI_820_2007-12-03
 
@@ -122,6 +124,7 @@ def run(
     blocks = md_segmenter.segment_gazette_md(
         full_md,
         expected_act_count=len(sumar_entries),
+        era=era,
     )
     _t = _log(_gname, "segment", f"{len(blocks)} blocks", _t)
 
@@ -164,6 +167,7 @@ def run(
 
     # ── Step 4: LLM structuring per act ───────────────────────────────────────
     _log(_gname, "llm_loop", f"starting {len(blocks)} acts")
+    _act_max_retries = _act_retry_limit(settings)
     acts: list[LegalAct] = []
     for act_idx, block in enumerate(blocks):
         _t_act = time.time()
@@ -230,22 +234,63 @@ def run(
                     f"(was: {_prev_nr!r} before recovery, signatory: {_sig_hint!r})"
                 )
 
-        # Stage 2: LLM verifies and corrects the draft
-        _log(_gname, f"act[{act_idx}/{len(blocks)-1}]",
-             f"LLM call (draft nr={rule_draft.act_number!r} type={rule_draft.doc_type})")
-        meta = llm_structurer.structure_act(
-            block,
-            gazette_year=gazette_year,
-            settings=settings,
-            edit_distance_threshold=edit_thr,
-            rule_draft=rule_draft,
-        )
+        # Stage 1.6: sumar-table positional fallback — only fires when act_number
+        # is still "0" after Stage 1.5 recovery (e.g. mojibake-corrupted closing
+        # block that fitz also could not recover).  Uses positional alignment
+        # (act_idx ↔ sumar_entries[act_idx]) with a doc_type sanity check.
+        # Write-once-into-empty: never overrides a real number.
+        if rule_draft.act_number == "0" and act_idx < len(sumar_entries):
+            _sumar = sumar_entries[act_idx]
+            _sumar_nr = str(getattr(_sumar, "act_number", "") or "").strip()
+            _sumar_dt = str(getattr(_sumar, "doc_type", "") or "").strip().upper()
+            # Accept when: sumar has a non-zero number AND doc_type matches or
+            # either side is UNKNOWN (be lenient when draft doc_type is still unresolved).
+            _dt_ok = (
+                not _sumar_dt
+                or not rule_draft.doc_type
+                or rule_draft.doc_type == "UNKNOWN"
+                or _sumar_dt == rule_draft.doc_type
+            )
+            if _sumar_nr and _sumar_nr not in ("0", "") and _dt_ok:
+                rule_draft.act_number = _sumar_nr
+                rule_draft.act_number_confidence = "high"
+                rule_draft.warnings.append(
+                    f"act_number filled from sumar table (positional fallback, "
+                    f"sumar[{act_idx}]: {_sumar_nr!r}, sumar_doc_type={_sumar_dt!r})"
+                )
 
-        # full_text: use LLM-corrected text if available, else plain text
-        full_text = meta.pop("full_text_corrected", None) or block.plain_text
-        _via = meta.pop("_via", "unknown")
-        _llm_warnings = meta.pop("extraction_warnings", [])
-        _llm_warnings.insert(0, f"_via:{_via}")
+        # Stage 2: LLM verifies and corrects the draft (with per-act retry on bad result)
+        _act_settings = settings
+        meta = full_text = _via = _llm_warnings = None  # type: ignore[assignment]
+        for _attempt in range(1 + _act_max_retries):
+            _log(_gname, f"act[{act_idx}/{len(blocks)-1}]",
+                 f"LLM call attempt {_attempt + 1} (draft nr={rule_draft.act_number!r} type={rule_draft.doc_type})")
+            meta = llm_structurer.structure_act(
+                block,
+                gazette_year=gazette_year,
+                settings=_act_settings,
+                edit_distance_threshold=edit_thr,
+                rule_draft=rule_draft,
+            )
+            full_text = meta.pop("full_text_corrected", None) or block.plain_text
+            _via = meta.pop("_via", "unknown")
+            _llm_warnings = meta.pop("extraction_warnings", [])
+            _llm_warnings.insert(0, f"_via:{_via}")
+
+            _act_nr = str(meta.get("act_number") or "0")
+            _act_dt = str(meta.get("doc_type") or "UNKNOWN")
+            # Skip "missing number" retry for doc types that legitimately have
+            # no own number (COMUNICAT, RECTIFICARE, ANUNT, ANUNȚ).  Still
+            # retry when doc_type itself is UNKNOWN.
+            _no_number_ok = _act_dt in NO_NUMBER_DOC_TYPES
+            _act_is_bad = (_act_nr in ("0", "") and not _no_number_ok) or _act_dt == "UNKNOWN"
+            if not _act_is_bad or _attempt >= _act_max_retries:
+                if _attempt > 0 and not _act_is_bad:
+                    _llm_warnings.append(f"act_number recovered on retry {_attempt + 1}")
+                break
+            _log(_gname, f"act[{act_idx}/{len(blocks)-1}]",
+                 f"bad result (nr={_act_nr!r} type={_act_dt!r}), retrying with fallback model")
+            _act_settings = _make_act_fallback_settings(settings, _attempt)
 
         meta["_gazette_issue_number"] = issue_number
 
@@ -264,6 +309,17 @@ def run(
         act = _build_act(act_idx, raw_for_build.text, meta, raw_for_build.page_range, gazette_year)
         act.extraction_warnings.extend(_llm_warnings)
         acts.append(act)
+
+    # ── Phantom dedup: drop empty segmentation artefacts that survived LLM ──────
+    # A phantom is an act with no identity (number=0/unknown, type=UNKNOWN),
+    # no authority, no articles, and a very short body — it is a segmentation
+    # fragment, not a real act.  Must run BEFORE Annex propagation so a phantom
+    # cannot serve as the "previous act" inheritance source.
+    _before_dedup = len(acts)
+    acts = [a for a in acts if not _is_phantom_act(a)]
+    if len(acts) < _before_dedup:
+        _log(_gname, "phantom_dedup",
+             f"dropped {_before_dedup - len(acts)} phantom act(s)")
 
     # ── Annex propagation (same as regex pipeline) ────────────────────────────
     for i in range(1, len(acts)):
@@ -298,6 +354,58 @@ def run(
         extracted_at=datetime.now(timezone.utc).isoformat(),
         extraction_warnings=warnings,
     )
+
+
+def _is_phantom_act(act) -> bool:
+    """Return True for acts that are segmentation artefacts, not real acts.
+
+    All five conditions must hold to avoid dropping legitimate unnumbered acts:
+    - act_number is "0", empty, or absent (no identity)
+    - doc_type is UNKNOWN (no recognised act type)
+    - issuing_authority is empty (no identified issuer)
+    - articles list is empty (no article structure parsed)
+    - full_text is very short (< 200 whitespace-tokens)
+
+    A COMUNICAT that is legitimately unnumbered still has an authority or a real
+    body, so it will NOT be flagged as phantom.
+    """
+    act_nr = getattr(act, "act_number", None) or ""
+    return (
+        (act_nr in ("0", "") or act_nr is None)
+        and getattr(act, "doc_type", "UNKNOWN") == "UNKNOWN"
+        and not getattr(act, "issuing_authority", "")
+        and not getattr(act, "articles", [])
+        and len((getattr(act, "full_text", "") or "").split()) < 200
+    )
+
+
+def _act_retry_limit(settings) -> int:
+    """Return the per-act LLM retry limit from extraction_llm config (default 2)."""
+    ecfg = getattr(settings, "extraction_llm", None)
+    return getattr(ecfg, "max_retries", 2) if ecfg else 2
+
+
+def _make_act_fallback_settings(settings, attempt: int):
+    """Return settings with the fallback LLM model for per-act retries."""
+    ecfg = getattr(settings, "extraction_llm", None)
+    if not ecfg:
+        return settings
+    fallback_model = getattr(ecfg, "fallback_model", "") or ""
+    if not fallback_model:
+        return settings
+    try:
+        import copy
+        s = copy.deepcopy(settings)
+        object.__setattr__(s.extraction_llm, "model", fallback_model)
+        fb_url = getattr(ecfg, "fallback_base_url", "") or ""
+        if fb_url:
+            object.__setattr__(s.extraction_llm, "base_url", fb_url)
+        fb_tokens = getattr(ecfg, "fallback_max_tokens", 0) or 0
+        if fb_tokens:
+            object.__setattr__(s.extraction_llm, "max_tokens", fb_tokens)
+        return s
+    except Exception:
+        return settings
 
 
 def _normalize_gazette_md(md: str, era=None) -> str:
