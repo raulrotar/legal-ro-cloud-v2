@@ -21,10 +21,15 @@ ARTICLE_PATTERN = re.compile(r'^(?:Art\.|Articolul)\s*(\d+)', re.MULTILINE)
 ALINEAT_PATTERN = re.compile(r'^\s*\((\d+)\)', re.MULTILINE)
 PARAGRAPH_PATTERN = re.compile(r'^\s*(\d+)\.\s', re.MULTILINE)
 
-TARGET_TOKENS = 800
+# Sizes follow the 2026 legal-RAG evidence (docs/EMBEDDINGS_PLAN.md):
+# bge-m3 dense quality peaks <=512 tokens and legal benchmarks favor
+# article-unit chunks, so the cap drops 1024→512 and the merge target
+# 800→450.  Overlap stays only for the fallback window splitter —
+# structural chunks are self-contained and overlap is wasted index.
+TARGET_TOKENS = 450
 MIN_TOKENS = 50
-MAX_TOKENS = 1024  # BGE-M3 supports 8192 tokens; 1024 is the empirical retrieval sweet spot
-OVERLAP_TOKENS = 100
+MAX_TOKENS = 512
+OVERLAP_TOKENS = 80
 
 
 def count_tokens(text: str) -> int:
@@ -209,7 +214,9 @@ def _chunk_by_window(text: str) -> list[TextChunk]:
     start = 0
 
     while start < len(tokens):
-        end = min(start + TARGET_TOKENS + 100, len(tokens))
+        # window must respect MAX_TOKENS — _enforce_max_size re-splits via
+        # this function, so any slack here permanently leaks oversized chunks
+        end = min(start + TARGET_TOKENS, start + MAX_TOKENS, len(tokens))
         chunk_tokens = tokens[start:end]
         chunk_text = enc.decode(chunk_tokens)
 

@@ -55,6 +55,21 @@ def load_bundle(out_root: Path, mongo_uri: str, db_name: str = "legalro",
     return {"loaded": loaded, "skipped": skipped}
 
 
+def _quantize_embedding(doc: dict) -> None:
+    """Store the vector as BSON binData int8 instead of a float64 array.
+
+    bge-m3 vectors are L2-normalized (values in [-1, 1]); int8 scalar
+    quantization (×127) keeps cosine ranking nearly intact and cuts vector
+    storage ~13× (13 KB → ~1 KB per 1024-dim vector) — required to fit
+    Atlas M0 (docs/EMBEDDINGS_PLAN.md Phase 3)."""
+    vec = doc.get("embedding")
+    if not isinstance(vec, list) or not vec:
+        return
+    from bson.binary import Binary, BinaryVectorDtype
+    int8 = [max(-128, min(127, round(v * 127))) for v in vec]
+    doc["embedding"] = Binary.from_vector(int8, BinaryVectorDtype.INT8)
+
+
 def _bulk_upsert(coll, docs, batch: int) -> int:
     ops, n = [], 0
     for doc in docs:
@@ -62,6 +77,7 @@ def _bulk_upsert(coll, docs, batch: int) -> int:
         if _id is None:
             raise ValueError(f"bundle doc missing a deterministic _id: {list(doc)[:5]}")
         doc["_id"] = _id
+        _quantize_embedding(doc)
         ops.append(UpdateOne({"_id": _id}, {"$set": doc}, upsert=True))
         if len(ops) >= batch:
             coll.bulk_write(ops, ordered=False)

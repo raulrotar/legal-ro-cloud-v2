@@ -8,24 +8,9 @@ _load_dotenv()
 
 app = typer.Typer(name="legalro", help="Romanian Legal RAG System")
 
-# PID file for the background MLX LLM server process
-_PID_FILE = "/tmp/legalro_mlx.pid"
-
-
 def _project_root():
     from pathlib import Path
     return Path(__file__).parent.parent.parent.parent
-
-
-def _mlx_pid() -> int | None:
-    from pathlib import Path
-    p = Path(_PID_FILE)
-    if not p.exists():
-        return None
-    try:
-        return int(p.read_text().strip())
-    except ValueError:
-        return None
 
 
 def _process_alive(pid: int) -> bool:
@@ -41,20 +26,19 @@ def _process_alive(pid: int) -> bool:
 
 @app.command()
 def start():
-    """Start MongoDB and the LLM server (local MLX mode only)."""
+    """Start MongoDB and Ollama (local mode only)."""
     import subprocess
     import time
     import httpx
-    from pathlib import Path
     from rich.console import Console
     from legalro_core.config import load_settings
 
     console = Console()
     settings = load_settings()
 
-    if settings.llm.provider != "mlx":
+    if settings.llm.provider not in ("ollama",):
         console.print("[yellow]Cloud mode — no local services to start.[/yellow]")
-        console.print("Set MONGODB_URI, QDRANT_URL, QDRANT_API_KEY, GEMINI_API_KEY env vars.")
+        console.print("Set MONGODB_URI and GEMINI_API_KEY env vars.")
         return
 
     root = _project_root()
@@ -70,76 +54,52 @@ def start():
     if r.returncode != 0:
         console.print(f"[red]MongoDB failed:[/red] {r.stderr.strip()}")
         raise typer.Exit(1)
-    console.print("  [green]✓[/green] MongoDB running on port 27018")
+    console.print("  [green]✓[/green] MongoDB running")
 
-    # ── LLM server ───────────────────────────────────────────────────────────
-    existing_pid = _mlx_pid()
-    if existing_pid and _process_alive(existing_pid):
-        console.print(f"  [yellow]⚠[/yellow] LLM server already running (pid {existing_pid})")
-    else:
-        console.print(f"[bold]Starting LLM server[/bold] ({settings.llm.model})...")
-        log_path = Path("/tmp/legalro_mlx.log")
-        with open(log_path, "w") as log:
-            proc = subprocess.Popen(
-                ["mlx_lm.server", "--model", settings.llm.model, "--port", "8080",
-                 "--max-tokens", str(settings.llm.max_tokens),
-                 "--chat-template-args", '{"enable_thinking": true, "thinking_budget": 2048}'],
-                stdout=log,
-                stderr=log,
-                start_new_session=True,  # detach from current terminal
-            )
-        Path(_PID_FILE).write_text(str(proc.pid))
-        console.print(f"  pid {proc.pid} · log: {log_path}")
-
-        # Wait up to 60 s for the server to become ready
-        console.print("  Waiting for LLM server to be ready", end="")
-        for _ in range(60):
+    # ── Ollama ───────────────────────────────────────────────────────────────
+    # Check if already running
+    try:
+        httpx.get("http://localhost:11434/api/tags", timeout=2)
+        console.print(f"  [yellow]⚠[/yellow] Ollama already running — using model [bold]{settings.llm.model}[/bold]")
+    except Exception:
+        console.print("[bold]Starting Ollama...[/bold]")
+        subprocess.Popen(
+            ["ollama", "serve"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        console.print("  Waiting for Ollama to be ready", end="")
+        for _ in range(30):
             try:
-                httpx.get(f"{settings.llm.base_url}/models", timeout=2)
-                console.print("\n  [green]✓[/green] LLM server ready")
+                httpx.get("http://localhost:11434/api/tags", timeout=2)
+                console.print("\n  [green]✓[/green] Ollama ready")
                 break
             except Exception:
                 console.print(".", end="", highlight=False)
                 time.sleep(1)
         else:
-            console.print("\n  [yellow]⚠[/yellow] LLM server not responding yet — check /tmp/legalro_mlx.log")
+            console.print("\n  [yellow]⚠[/yellow] Ollama not responding — run [bold]ollama serve[/bold] manually")
 
     console.print("\n[bold green]System is up.[/bold green] Run [bold]legalro status[/bold] to verify.")
 
 
 @app.command()
 def stop():
-    """Stop the LLM server and MongoDB (local MLX mode only)."""
-    import os
-    import signal
+    """Stop MongoDB (local mode only). Ollama manages its own lifecycle."""
     import subprocess
-    from pathlib import Path
     from rich.console import Console
     from legalro_core.config import load_settings
 
     console = Console()
     settings = load_settings()
 
-    if settings.llm.provider != "mlx":
+    if settings.llm.provider not in ("ollama",):
         console.print("[yellow]Cloud mode — no local services to stop.[/yellow]")
         return
 
     root = _project_root()
 
-    # ── LLM server ───────────────────────────────────────────────────────────
-    pid = _mlx_pid()
-    if pid and _process_alive(pid):
-        console.print(f"[bold]Stopping LLM server[/bold] (pid {pid})...")
-        try:
-            os.kill(pid, signal.SIGTERM)
-            console.print("  [green]✓[/green] LLM server stopped")
-        except Exception as e:
-            console.print(f"  [red]✗[/red] Could not stop LLM server: {e}")
-    else:
-        console.print("  LLM server was not running")
-    Path(_PID_FILE).unlink(missing_ok=True)
-
-    # ── MongoDB ──────────────────────────────────────────────────────────────
     console.print("[bold]Stopping MongoDB...[/bold]")
     r = subprocess.run(
         ["docker", "compose", "stop"],
@@ -152,6 +112,7 @@ def stop():
     else:
         console.print(f"  [red]✗[/red] {r.stderr.strip()}")
 
+    console.print("  Ollama continues running in the background (stop manually with [bold]pkill ollama[/bold] if needed)")
     console.print("\n[bold]System is down.[/bold]")
 
 
@@ -281,17 +242,20 @@ def status():
     except Exception as e:
         table.add_row("MongoDB", "✗ Error", str(e))
 
-    if settings.llm.provider == "mlx":
+    if settings.llm.provider == "ollama":
         import httpx
-        pid = _mlx_pid()
-        if pid and _process_alive(pid):
-            try:
-                httpx.get(f"{settings.llm.base_url}/models", timeout=3)
-                table.add_row("LLM", "✓ Running", f"{settings.llm.model}  (pid {pid})")
-            except Exception:
-                table.add_row("LLM", "⚠ Starting", f"pid {pid} alive but not responding yet")
-        else:
-            table.add_row("LLM", "✗ Offline", "Run: legalro start")
+        try:
+            resp = httpx.get("http://localhost:11434/api/tags", timeout=3)
+            loaded = [m["name"] for m in resp.json().get("models", [])]
+            model_ok = any(settings.llm.model in m for m in loaded)
+            if model_ok:
+                table.add_row("LLM (Ollama)", "✓ Running", settings.llm.model)
+            else:
+                pulled = ", ".join(loaded) or "none"
+                table.add_row("LLM (Ollama)", "⚠ Model missing",
+                              f"{settings.llm.model} not pulled — run: ollama pull {settings.llm.model}\n(pulled: {pulled})")
+        except Exception:
+            table.add_row("LLM (Ollama)", "✗ Offline", "Run: ollama serve")
     else:
         table.add_row("LLM", "✓ Cloud", f"{settings.llm.model} via {settings.llm.provider}")
 

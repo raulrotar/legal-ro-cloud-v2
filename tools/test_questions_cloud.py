@@ -6,7 +6,9 @@ import time
 import unicodedata
 from datetime import datetime
 
-HF_URL = "http://localhost:7861"
+import os as _os
+HF_URL = _os.getenv("LEGALRO_API_URL", "http://localhost:7861")
+HF_TOKEN = _os.getenv("HF_TOKEN", "")
 API_TOKEN = "9576c35462b3121caf015fd0bae883112ae00a8ba5aa8804e79400837d87e244"
 
 QUESTIONS = [
@@ -141,9 +143,12 @@ def _score(answer: str, expected: str) -> str:
 
 def ask(question: str) -> tuple[str, float]:
     t0 = time.time()
+    headers = {"x-api-token": API_TOKEN, "Content-Type": "application/json"}
+    if HF_TOKEN:
+        headers["Authorization"] = f"Bearer {HF_TOKEN}"
     resp = httpx.post(
         f"{HF_URL}/query",
-        headers={"x-api-token": API_TOKEN, "Content-Type": "application/json"},
+        headers=headers,
         json={"question": question},
         timeout=180,
     )

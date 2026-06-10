@@ -22,8 +22,11 @@ embeddings:
   batch_size: 16
 
 ocr:
-  provider: "llamaparse"   # mistral | llamaparse | docling | ocrmac (local only)
+  provider: "docling"      # fully local — no API costs at 50k-PDF scale
   language: "ro"
+  scanned_provider: "glm-ocr"   # tiled OCR with Tesseract verification gate
+  glm_model: "glm-ocr:latest"
+  glm_dpi: 200
 
 mongodb:
   uri: ""   # set via MONGODB_URI env var
@@ -52,7 +55,7 @@ extraction_llm:
   vlm_enabled: false
   # ── Option C (Docling→MD→LLM→JSON) ──────────────────────────────────────
   # mode: "md_llm"
-  md_cache_dir: "md_cache"
+  md_cache_dir: "db/md_cache"
   edit_distance_threshold: 0.15
   # ── Provider (empty = inherit from llm: block — Gemini) ──────────────────
   base_url: ""

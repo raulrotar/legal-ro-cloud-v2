@@ -181,11 +181,18 @@ def enrich_markdown_with_fitz(md: str, recovered: list[ClosingSig]) -> tuple[str
         if not closing:
             continue
 
-        name_hint = _extract_name_hint(sig.context)
-        if not name_hint:
-            continue
+        # Primary: anchor on the act-UNIQUE text right before the closing
+        # block (e.g. the appointment sentence with the person's name).  The
+        # signatory name is useless as an anchor when every act in the issue
+        # is signed by the same person — injections then land on the wrong
+        # acts and shuffle the numbers.
+        inject_pos = _find_injection_by_context(md, sig.context)
 
-        inject_pos = _find_injection_point(md, name_hint)
+        if inject_pos is None:
+            name_hint = _extract_name_hint(sig.context)
+            if not name_hint:
+                continue
+            inject_pos = _find_injection_point(md, name_hint)
         if inject_pos is None:
             continue
 
@@ -193,6 +200,50 @@ def enrich_markdown_with_fitz(md: str, recovered: list[ClosingSig]) -> tuple[str
         injections += 1
 
     return md, injections
+
+
+_FOLD_DROP_RE = re.compile(r"[\s\-–—|*#>_]")
+
+
+def _fold_with_map(text: str) -> tuple[str, list[int]]:
+    """Fold text for fuzzy matching (drop whitespace/markup) keeping a map
+    from folded index → raw index."""
+    chars: list[str] = []
+    idx: list[int] = []
+    for i, c in enumerate(text):
+        if not _FOLD_DROP_RE.match(c):
+            chars.append(c)
+            idx.append(i)
+    return "".join(chars), idx
+
+
+def _find_injection_by_context(md: str, context: str, probe_len: int = 110) -> int | None:
+    """Locate the act this closing belongs to via the unique pre-closing text.
+
+    Takes the last `probe_len` folded chars of the context BEFORE the
+    signature/closing boilerplate and finds them in the folded markdown.
+    Returns the raw offset after that line, or None.
+    """
+    # cut the context at the start of the closing boilerplate
+    cut = re.split(
+        r"PRE[ȘS]EDINTELE\s+ROM[ÂA]NIEI|Bucure[șs]ti,\s*\d{1,2}\s+\w+\s+\d{4}",
+        context,
+    )[0]
+    probe_src, _ = _fold_with_map(cut)
+    if len(probe_src) < 40:
+        return None
+    probe = probe_src[-probe_len:]
+
+    md_folded, idx_map = _fold_with_map(md)
+    pos = md_folded.find(probe)
+    if pos == -1 or md_folded.find(probe, pos + 1) != -1:
+        return None  # absent or ambiguous — let the name-hint fallback decide
+    raw_end = idx_map[min(pos + len(probe) - 1, len(idx_map) - 1)]
+    # don't double-inject when a closing Nr. already follows closely
+    if re.search(r"\bNr\.\s*\d", md[raw_end:raw_end + 250]):
+        return None
+    line_end = md.find("\n", raw_end)
+    return (line_end + 1) if line_end != -1 else len(md)
 
 
 def _extract_closing_block(context: str, number: str) -> str | None:

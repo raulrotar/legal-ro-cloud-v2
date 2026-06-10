@@ -62,8 +62,32 @@ def write_jsonl(path: Path, items: Iterable[dict], gz: bool = False) -> int:
 
 
 def append_manifest(out_root: Path, meta: DocMeta) -> None:
-    with (out_root / MANIFEST).open("a", encoding="utf-8") as f:
-        f.write(json.dumps(asdict(meta), ensure_ascii=False) + "\n")
+    """Upsert a manifest entry by doc_id (last write wins).
+
+    Reads the existing manifest, drops any line with the same doc_id, appends
+    the new entry, and writes back atomically via a tmp-file rename.  This
+    ensures every doc appears exactly once regardless of how many times
+    emit_doc is called for the same doc (e.g. Phase-1 emit followed by a
+    fallback-merge re-emit).
+    """
+    mpath = out_root / MANIFEST
+    existing: list[str] = []
+    if mpath.exists():
+        for line in mpath.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                if json.loads(line).get("doc_id") == meta.doc_id:
+                    continue          # drop stale entry for this doc
+            except Exception:
+                pass                  # keep malformed lines untouched
+            existing.append(line)
+    existing.append(json.dumps(asdict(meta), ensure_ascii=False))
+    tmp = mpath.with_suffix(".jsonl.tmp")
+    tmp.write_text("\n".join(existing) + "\n", encoding="utf-8")
+    import os
+    os.replace(tmp, mpath)
 
 
 def sha256_file(p: Path) -> str:
@@ -76,14 +100,24 @@ def sha256_file(p: Path) -> str:
 
 # ── readers (used by the loader + dashboard) ──────────────────────────────────
 def read_manifest(out_root: Path) -> Iterator[DocMeta]:
+    """Yield one DocMeta per doc_id, last entry wins (defensive dedupe).
+
+    Tolerates legacy bundles that contain duplicate lines for the same doc_id
+    (produced before append_manifest became an idempotent upsert).  The last
+    line for a given doc_id carries the most recent (post-merge) checksums and
+    is the one that matches the on-disk bundle files.
+    """
     mpath = out_root / MANIFEST
     if not mpath.exists():
         return
+    seen: dict[str, DocMeta] = {}
     with mpath.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
-                yield DocMeta(**json.loads(line))
+                m = DocMeta(**json.loads(line))
+                seen[m.doc_id] = m   # last occurrence wins
+    yield from seen.values()
 
 
 def read_jsonl(path: Path) -> Iterator[dict]:

@@ -56,15 +56,15 @@ For serving-only changes (prompts, temperature, search weights) a redeploy is en
 Remove all cached intermediate files so extraction runs fresh.
 
 ```bash
-rm -rf md_cache/
-rm -rf out/by_doc out/manifest.jsonl
+rm -rf db/md_cache/
+rm -rf db/bundle_bge-m3/by_doc db/bundle_bge-m3/manifest.jsonl
 rm -f .load_state.json
-rm -rf extracted/
+rm -rf db/extracted/
 ```
 
-`md_cache/` — Docling/LlamaParse Markdown output (Option C intermediate).
-`out/` — embedded chunk bundles (input to `load`).
-`extracted/` — raw GazetteDocument JSONs (structural cache, re-created by `extract`).
+`db/md_cache/` — Docling/LlamaParse Markdown output (Option C intermediate).
+`db/bundle_bge-m3/` — embedded chunk bundles (input to `load`).
+`db/extracted/` — raw GazetteDocument JSONs (structural cache, re-created by `extract`).
 `.load_state.json` — resume-state file; delete so `load` doesn't skip anything.
 
 ---
@@ -92,16 +92,17 @@ dropped: runs
 
 ---
 
-## Step 2 — Extract: PDF → chunks → embeddings
+## Step 2 — Extract: PDF → chunks → embeddings (local)
 
-Runs all 21 PDFs through OCR → segmentation → extraction → embedding and writes
-on-disk bundles under `out/`.
+Runs all PDFs through OCR → segmentation → extraction → embedding and writes
+on-disk bundles under `db/bundle_bge-m3/`.  Everything runs locally — no cloud calls
+except optional OCR via LlamaParse.
 
 ```bash
 uv run legalro-process extract \
   --root laws/ \
-  --out out/ \
-  --config config/cloud.yaml
+  --out db/bundle_bge-m3/ \
+  --extracted-dir db/extracted/
 ```
 
 Key flags:
@@ -109,15 +110,16 @@ Key flags:
 | Flag | Default | When to change |
 |------|---------|----------------|
 | `--root` | required | Point to a subdirectory (e.g. `laws/1989/`) for partial runs |
-| `--out` | `out` | Keep default unless testing |
-| `--config` | `config/cloud.yaml` | Use `config/local.yaml` for local OCR (ocrmac/docling) |
+| `--out` | `db/bundle_bge-m3` | Keep default unless testing |
+| `--extracted-dir` | `db/extracted` | Keep default unless testing |
+| `--config` | `config/local.yaml` | Use `config/cloud.yaml` for cloud LLM extraction |
 | `--no-embed` | off | Add to skip embedding (structural-only test run) |
 | `--limit N` | 0 (all) | Process only first N PDFs (useful for smoke tests) |
 
 Expected final line:
 ```
 [extract] done: 21 ok, 0 failed, coverage_min=0.791
-[extract] manifest: out/manifest.jsonl
+[extract] manifest: db/bundle_bge-m3/manifest.jsonl
 ```
 
 Validation warnings (`DOC_TYPE_UNKNOWN`, `ACT_NUMBER_ZERO`) for individual acts
@@ -125,13 +127,13 @@ are normal — they are annotated in the JSON and don't block ingestion.
 
 ---
 
-## Step 3 — Load: bundles → MongoDB
+## Step 3 — Load: bundles → MongoDB (push to cloud)
 
-Upserts all extracted bundles from `out/` into MongoDB.
+Upserts all locally built bundles from `db/bundle_bge-m3/` into MongoDB Atlas.
 
 ```bash
 uv run legalro-process load \
-  --root out/ \
+  --root db/bundle_bge-m3/ \
   --mongo "$MONGODB_URI" \
   --no-resume
 ```
@@ -178,7 +180,7 @@ from legalro_core.config import load_settings
 from legalro_core.store import get_db
 from legalro_core.retrieval.search import hybrid_search
 
-s = load_settings("config/cloud.yaml")
+s = load_settings()  # defaults to config/local.yaml; set LEGALRO_ENV=cloud for cloud config
 db = get_db(s)
 print("chunks:", db.chunks.count_documents({}))
 print("gazettes:", db.gazettes.count_documents({}))
@@ -216,15 +218,14 @@ Target: **≥ 48/52 CORECT**.
 Re-extract one year without touching other issues in MongoDB:
 
 ```bash
-# Extract only 1989 issues
+# Extract only 1989 issues (local)
 uv run legalro-process extract \
   --root laws/1989/ \
-  --out out/ \
-  --config config/cloud.yaml
+  --out db/bundle_bge-m3/
 
-# Load only the new/changed bundles (--resume skips already-loaded)
+# Push to cloud (--resume skips already-loaded)
 uv run legalro-process load \
-  --root out/ \
+  --root db/bundle_bge-m3/ \
   --mongo "$MONGODB_URI"
 ```
 
@@ -244,7 +245,7 @@ f.write_text(json.dumps(state, indent=2))
 print("Removed 1989 entries from load state")
 EOF
 
-uv run legalro-process load --root out/ --mongo "$MONGODB_URI"
+uv run legalro-process load --root db/bundle_bge-m3/ --mongo "$MONGODB_URI"
 ```
 
 ---

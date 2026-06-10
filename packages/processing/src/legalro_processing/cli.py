@@ -1,9 +1,9 @@
-"""Processing CLI — the batch entrypoint that runs on the VPS.
+"""Processing CLI — local extraction + cloud push.
 
-    legalro-process extract --root laws/ --out out/      # Stage A: PDF -> bundle
-    legalro-process load    --root out/  --mongo "$URI"  # Stage B: bundle -> Mongo
+    legalro-process extract --root laws/ --out db/bundle_bge-m3/      # Stage A: PDF -> bundle (local)
+    legalro-process load    --root db/bundle_bge-m3/  --mongo "$URI"  # Stage B: push bundle -> Mongo (cloud)
 
-Stage A (extract) is fully wired below; Stage B (load) lives in loader.py.
+Extraction and processing run fully locally.  Only `load` touches the remote server.
 """
 from __future__ import annotations
 
@@ -21,9 +21,9 @@ app = typer.Typer(help="LegalRo processing pipeline (Stage A extract+embed, Stag
 @app.command()
 def extract(
     root: Path = typer.Option(..., help="Directory of source PDFs (searched recursively)."),
-    out: Path = typer.Option(Path("out"), help="Bundle output root."),
-    extracted_dir: Path = typer.Option(Path("extracted"), help="Where to save/cache GazetteDocument JSONs."),
-    config: str = typer.Option(None, help="Path to a config yaml (defaults to env/cloud.yaml)."),
+    out: Path = typer.Option(Path("db/bundle_bge-m3"), help="Bundle output root."),
+    extracted_dir: Path = typer.Option(Path("db/extracted"), help="Where to save/cache GazetteDocument JSONs."),
+    config: str = typer.Option(None, help="Path to a config yaml (defaults to config/local.yaml)."),
     embed: bool = typer.Option(True, help="Compute bge-m3 embeddings (off = fast structural run)."),
     gzip_chunks: bool = typer.Option(True, help="gzip chunks.jsonl in the bundle."),
     limit: int = typer.Option(0, help="Process at most N PDFs (0 = all). Useful for the pilot."),
@@ -67,11 +67,53 @@ def extract(
     typer.echo(f"[extract] done: {ok} ok, {failed} failed, coverage_min={cov_min:.3f}")
     typer.echo(f"[extract] manifest: {out / 'manifest.jsonl'}")
 
+    # ── Fallback merge pass ───────────────────────────────────────────────────
+    # Collect any JSONs that still have VALIDATE:* error tags after the inline
+    # retries.  Re-extract each from its source PDF using the regex pipeline
+    # (no LLM) and merge the results field-by-field into the primary JSON.
+    # The merged bundle slice is then re-written so the load step gets
+    # the best possible data.
+    from legalro_processing.fallback_merge import collect_flagged, run_fallback_merge, find_source_pdf
+
+    flagged = collect_flagged(extracted_dir)
+    if flagged:
+        typer.echo(f"\n[fallback] {len(flagged)} flagged JSON(s) — running regex merge pass")
+        merged_ok = merged_failed = 0
+        for json_path in flagged:
+            pdf_path = find_source_pdf(json_path, root)
+            if pdf_path is None:
+                typer.echo(f"  SKIP {json_path.name} — source PDF not found under {root}")
+                merged_failed += 1
+                continue
+            try:
+                merged_path = run_fallback_merge(json_path, pdf_path, settings)
+                # Rebuild bundle slice from merged JSON
+                gazette = load_gazette(merged_path)
+                issue_id, sha, gazette_doc, chunks, coverage = build_issue_docs(
+                    gazette, pdf_path, settings, embed=embed
+                )
+                emit_doc(out, issue_id, sha, coverage, gazette_doc, chunks,
+                         gzip_chunks=gzip_chunks)
+                typer.echo(f"  merged {json_path.name}: {len(chunks)} chunks")
+                merged_ok += 1
+            except Exception as exc:  # noqa: BLE001
+                typer.echo(f"  FAILED {json_path.name}: {exc}")
+                merged_failed += 1
+        typer.echo(f"[fallback] done: {merged_ok} merged, {merged_failed} failed")
+    else:
+        typer.echo("[fallback] no flagged JSONs — all clean")
+
+    # Release Ollama models from RAM now that the full batch is finished.
+    if getattr(settings.llm, "provider", "") == "ollama":
+        _ollama_unload(settings.llm.base_url, settings.llm.model)
+        if getattr(settings.embeddings, "provider", "") == "ollama":
+            _ollama_unload(settings.llm.base_url, settings.embeddings.model)
+
 
 @app.command()
 def extract_json(
     root: Path = typer.Option(..., help="Directory of source PDFs (searched recursively)."),
-    extracted_dir: Path = typer.Option(Path("extracted"), help="Output directory for GazetteDocument JSONs."),
+    extracted_dir: Path = typer.Option(Path("db/extracted"), help="Output directory for GazetteDocument JSONs."),
     config: str = typer.Option(None, help="Path to a config yaml."),
     limit: int = typer.Option(0, help="Process at most N PDFs (0 = all)."),
 ):
@@ -83,7 +125,7 @@ def extract_json(
     Example — run with LLM extraction into a separate folder:
       legalro-process extract-json \\
         --root laws/ \\
-        --extracted-dir extracted_llm/ \\
+        --extracted-dir db/extracted/ \\
         --config config/local.yaml
     """
     from legalro_core.config import load_settings
@@ -114,10 +156,37 @@ def extract_json(
 
     typer.echo(f"[extract-json] done: {ok} ok, {failed} failed")
 
+    # Fallback merge pass — same as extract command, JSON-only (no bundle rebuild)
+    from legalro_processing.fallback_merge import collect_flagged, run_fallback_merge, find_source_pdf
+
+    flagged = collect_flagged(extracted_dir)
+    if flagged:
+        typer.echo(f"\n[fallback] {len(flagged)} flagged JSON(s) — running regex merge pass")
+        merged_ok = merged_failed = 0
+        for json_path in flagged:
+            pdf_path = find_source_pdf(json_path, root)
+            if pdf_path is None:
+                typer.echo(f"  SKIP {json_path.name} — source PDF not found under {root}")
+                merged_failed += 1
+                continue
+            try:
+                run_fallback_merge(json_path, pdf_path, settings)
+                typer.echo(f"  merged {json_path.name}")
+                merged_ok += 1
+            except Exception as exc:  # noqa: BLE001
+                typer.echo(f"  FAILED {json_path.name}: {exc}")
+                merged_failed += 1
+        typer.echo(f"[fallback] done: {merged_ok} merged, {merged_failed} failed")
+    else:
+        typer.echo("[fallback] no flagged JSONs — all clean")
+
+    if getattr(settings.llm, "provider", "") == "ollama":
+        _ollama_unload(settings.llm.base_url, settings.llm.model)
+
 
 @app.command()
 def load(
-    root: Path = typer.Option(Path("out"), help="Bundle root produced by `extract`."),
+    root: Path = typer.Option(Path("db/bundle_bge-m3"), help="Bundle root produced by `extract`."),
     mongo: str = typer.Option(None, help="MongoDB URI. Defaults to $MONGODB_URI env var."),
     db: str = typer.Option("legalro", help="Database name."),
     resume: bool = typer.Option(True, help="Skip docs already loaded (.load_state.json)."),
@@ -275,9 +344,9 @@ def _wait_for_indexes(database, timeout: int = 120) -> None:
 
 @app.command()
 def validate_extractions(
-    extracted_dir: Path = typer.Option(Path("extracted"), help="Directory of GazetteDocument JSONs to validate."),
+    extracted_dir: Path = typer.Option(Path("db/extracted"), help="Directory of GazetteDocument JSONs to validate."),
     laws_dir: Path = typer.Option(Path("laws"), help="PDF source directory (for re-extraction)."),
-    out: Path = typer.Option(Path("out"), help="Bundle output root (for re-extraction)."),
+    out: Path = typer.Option(Path("db/bundle_bge-m3"), help="Bundle output root (for re-extraction)."),
     config: str = typer.Option(None, help="Path to a config yaml."),
     reextract: bool = typer.Option(False, "--reextract", help="Re-extract files with ERROR-level issues."),
     embed: bool = typer.Option(True, help="Compute embeddings during re-extraction."),
@@ -292,13 +361,13 @@ def validate_extractions(
     current pipeline (including the draft-then-verify LLM stage).
 
     Example — validate only:
-      legalro-process validate-extractions --extracted-dir extracted_llama31_full/
+      legalro-process validate-extractions --extracted-dir db/extracted/
 
     Example — validate + auto-fix:
       legalro-process validate-extractions \\
-        --extracted-dir extracted_llama31_full/ \\
+        --extracted-dir db/extracted/ \\
         --laws-dir laws/ \\
-        --out bundle_llama31/ \\
+        --out db/bundle_bge-m3/ \\
         --reextract \\
         --config config/local.yaml
     """
@@ -446,6 +515,22 @@ def _find_source_pdf(json_path: Path, extracted_dir: Path, laws_dir: Path) -> Pa
     stem = json_path.stem  # e.g. MO_PI_820_2007-12-03
     matches = list(laws_dir.rglob(f"{stem}.pdf"))
     return matches[0] if matches else None
+
+
+def _ollama_unload(base_url: str, model: str) -> None:
+    """Ask Ollama to immediately evict a model from RAM (keep_alive=0)."""
+    try:
+        import httpx
+        # Ollama's native endpoint accepts keep_alive; use it directly
+        ollama_base = base_url.rstrip("/").removesuffix("/v1")
+        httpx.post(
+            f"{ollama_base}/api/generate",
+            json={"model": model, "keep_alive": 0},
+            timeout=10,
+        )
+        typer.echo(f"[ollama] unloaded {model} from RAM")
+    except Exception as exc:
+        typer.echo(f"[ollama] unload skipped ({exc})")
 
 
 if __name__ == "__main__":

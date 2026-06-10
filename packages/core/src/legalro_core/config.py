@@ -35,7 +35,7 @@ class ExtractionLLMConfig(BaseSettings):
     vlm_enabled: bool = False           # phase 3: VLM on page images (SCANNED only)
     # ── Option C: Docling→MD→LLM→JSON mode ───────────────────────────────────
     mode: str = "metadata_only"         # "metadata_only" (B) | "md_llm" (C)
-    md_cache_dir: str = "md_cache"      # where to save/load intermediate .md files
+    md_cache_dir: str = "db/md_cache"   # where to save/load intermediate .md files
     edit_distance_threshold: float = 0.15  # hallucination guard: max allowed edit ratio
     # ── Shared provider config ────────────────────────────────────────────────
     base_url: str = ""                  # empty → inherit Settings.llm.base_url
@@ -78,6 +78,30 @@ class OCRConfig(BaseSettings):
     language: str = "ro"
     llama_cloud_api_key: str = Field(default="", alias="llama_cloud_api_key")
     mistral_api_key: str = Field(default="", alias="mistral_api_key")
+    # GLM-OCR for SCANNED era — set scanned_provider: "docling" to revert
+    scanned_provider: str = "glm-ocr"
+    glm_model: str = "glm-ocr:latest"
+    glm_dpi: int = 200
+
+
+class ExtractionConfig(BaseSettings):
+    """General extraction toggles."""
+    table_triage_enabled: bool = True   # divert table-dense regions from act segmenter
+    annex_tables_fitz: bool = False     # ruled annex tables via PyMuPDF find_tables
+                                        # (multi-page stitch; replaces TableFormer
+                                        # output on table-annex gazettes)
+
+
+class RepairLLMConfig(BaseSettings):
+    """Vision-LLM repair pass — fires only for acts that fail inline validation.
+
+    Sends PDF page images + broken fields to a multimodal model so it can
+    recover correct values from the original document, not just the markdown.
+    Set enabled=False to disable entirely (falls back to regex result + annotation).
+    """
+    enabled: bool = True
+    model: str = "glm-ocr:latest"
+    base_url: str = ""   # empty → inherit Settings.llm.base_url
 
 
 class MongoDBConfig(BaseSettings):
@@ -103,6 +127,8 @@ class Settings(BaseSettings):
     mongodb: MongoDBConfig = Field(default_factory=MongoDBConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     extraction_llm: ExtractionLLMConfig = Field(default_factory=ExtractionLLMConfig)
+    repair_llm: RepairLLMConfig = Field(default_factory=RepairLLMConfig)
+    extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
 
 
 def load_settings(config_path: Path | str | None = None) -> Settings:
@@ -115,8 +141,10 @@ def load_settings(config_path: Path | str | None = None) -> Settings:
         env = os.getenv("LEGALRO_ENV", "").lower()
         if env == "staging":
             config_path = Path("config/staging.yaml")
-        else:
+        elif env == "cloud":
             config_path = Path("config/cloud.yaml")
+        else:
+            config_path = Path("config/local.yaml")
 
     path = Path(config_path)
     if not path.exists():

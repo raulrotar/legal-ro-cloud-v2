@@ -7,9 +7,11 @@
 │  VPS / LOCAL MACHINE  (processing)                                        │
 │                                                                           │
 │  legalro-process extract                                                  │
-│    PDF → Markdown  (Docling / LlamaParse; cached in md_cache/)           │
+│    PDF → Markdown  (GLM-OCR for scanned era, Docling otherwise)          │
+│                    cached in md_cache/ (sha256-keyed)                    │
 │    MD  → MdActBlock list  (md_segmenter)                                  │
-│    Block → GazetteDocument JSON  (llm_structurer; cached in extracted/)  │
+│    Block → GazetteDocument JSON  (md_rule_extractor regex + optional     │
+│                    vision repair pass; cached in extracted/)              │
 │    JSON → chunks → bge-m3 embed  (build.py)                              │
 │    Emit on-disk bundle  (bundle_writer.py → out/)                        │
 │         │                                                                 │
@@ -61,7 +63,10 @@ Shared contract imported by all other packages. Contains no ML-heavy dependencie
 | `models.py` | `Era` enum: `SCANNED / HYBRID / MODERN / BROKEN_2002 / BROKEN_2007` |
 | `store.py` | MongoDB connection pool (`get_db`) |
 | `embeddings.py` | bge-m3 embed wrapper; `embed_texts` / `embed_batch` |
+| `llm_client.py` | Shared OpenAI-compat LLM client (Gemini / Ollama) |
 | `normalize.py` | Diacritics, mojibake repair, BM25 text normalization |
+| `md_normalize.py` | Markdown-specific normalization helpers |
+| `act_number.py` | Act number parsing and canonicalisation |
 | `bundle.py` | On-disk bundle read helpers (manifest, checksums, JSONL.gz) |
 | `retrieval/search.py` | Hybrid search: `$vectorSearch` + `$search` + Python RRF + metadata boost |
 | `retrieval/context.py` | Parent-doc expansion + context string assembly |
@@ -80,24 +85,28 @@ VPS/batch package. Handles the entire extraction → embedding → load pipeline
 | `setup-indexes` | Create/update Atlas Search + vector indexes |
 | `reset-db` | Drop all collections |
 
-**Extraction pipeline (two modes):**
+**Extraction pipeline:**
 
 ```
-Option C (default, higher accuracy):
-  PDF → Docling/LlamaParse → full Markdown → md_cache/
-  Markdown → MdActBlock list (md_segmenter)
-  MdActBlock → LLM structured JSON (llm_structurer; hallucination-guarded)
+Primary path (deterministic, no LLM):
+  PDF → era detection
+    SCANNED → GLM-OCR (glm-ocr:latest) → Markdown → md_cache/
+    other   → Docling                  → Markdown → md_cache/
+  Markdown → MdActBlock list (md_segmenter, era-aware thresholds)
+  MdActBlock → md_rule_extractor (regex) → rule_draft fields
+            → secondary_analyzer (PyMuPDF closing-sig recovery)
+            → sumar positional fallback
   → GazetteDocument → extracted/
 
-Option A fallback (regex-only):
-  PDF → era detection → text extraction → sumar parsing
-  → act segmentation → metadata regex → GazetteDocument
+Repair pass (on-demand, flagged acts only):
+  Acts failing inline validation (ACT_NUMBER_ZERO, DOC_TYPE_UNKNOWN, …)
+  → llm_repair.py (llama3.2-vision:11b / glm-ocr) patches only flagged fields
 ```
 
 **Era detection** classifies each gazette as:
-- `SCANNED` — image-only scans; routed to LlamaParse or Mistral OCR
+- `SCANNED` — image-only scans (pre-1997); routed to GLM-OCR
 - `HYBRID` — mix of digital text and scanned facsimile pages
-- `BROKEN_2002` / `BROKEN_2007` — mojibake encoding from early digital era
+- `BROKEN_2002` / `BROKEN_2007` — mojibake encoding from early digital era; Docling visual render recovers glyphs
 - `MODERN` — clean born-digital PDFs; extracted with Docling
 
 **Build stage (`prepare/build.py`):**

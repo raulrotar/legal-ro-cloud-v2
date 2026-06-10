@@ -15,7 +15,7 @@ from legalro_core.models import Era, GazetteResult
 
 def _get_extracted_dir(settings: Settings) -> Path:
     raw = getattr(getattr(settings, "ingestion", None), "extracted_dir", None)
-    return Path(raw) if raw else Path("extracted")
+    return Path(raw) if raw else Path("db/extracted")
 
 
 def process_gazette(pdf_path: str, settings: Settings) -> GazetteResult:

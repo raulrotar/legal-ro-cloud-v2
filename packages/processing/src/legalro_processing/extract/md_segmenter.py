@@ -23,25 +23,33 @@ import re
 from dataclasses import dataclass, field
 
 
-# ── Heading patterns (applied AFTER letterspacing normalization) ──────────────
-
-# Act-type headings that always mark the start of a new act.
-# Applied after _normalize_heading_letterspacing() so no letter-spaces to handle.
-_ACT_HEADING = re.compile(
-    r'^#{1,3}\s+(?:'
+# ── Shared act-keyword vocabulary ────────────────────────────────────────────
+# Single source of truth for the Romanian gazette act-type keywords.
+# Used here for segmentation and exported for use by the heading promoter in
+# legalro_core.normalize so both components stay in sync.
+# Each entry is a raw regex alternation fragment (no anchors, no flags).
+ACT_KEYWORD_ALTERNATION = (
     r'DECIZIA\b'               # DECIZIA Nr. 576 (DCC or other numbered decision)
     r'|DECIZIE\b'              # standalone DECIZIE (PM / agency decisions)
-    r'|HOT[ĂA]R[ÂA]RE[A]?\b'  # HOTĂRÂRE / HOTĂRÂREA (HG)
+    r'|HOT[ĂA]R[ÂI]RE[A]?\b'  # HOTĂRÂRE / HOTĂRÂREA / HOTĂRÎRE (HG; incl. pre-1993 î)
     r'|DECRET(?:-LEGE)?\b'     # DECRET / DECRET-LEGE
     r'|ORDIN\b'                # ORDIN (not ORDINUL used in references)
     r'|LEGE[A]?\b'             # LEGE / LEGEA
     r'|OUG\b'
     r'|ORDONAN[TȚ][ĂA]\b'
     r'|COMUNICAT\b'
+    r'|PROCLAMA[TȚ]IE\b'       # PROCLAMAȚIE (1989 acts)
     r'|RAPORT\b'
     r'|RECTIFIC[ĂA]RI\b'
     r'|ANUN[TȚ]\b'
-    r')',
+)
+
+# ── Heading patterns (applied AFTER letterspacing normalization) ──────────────
+
+# Act-type headings that always mark the start of a new act.
+# Applied after _normalize_heading_letterspacing() so no letter-spaces to handle.
+_ACT_HEADING = re.compile(
+    r'^#{1,3}\s+(?:' + ACT_KEYWORD_ALTERNATION + r')',
     # Note: institution names (GUVERNUL ROMÂNIEI, CURTEA CONSTITUȚIONALĂ,
     # PREȘEDINTELE ROMÂNIEI, etc.) are NOT act boundaries — they are context
     # headers that appear before the act-type heading.  Act-type headings

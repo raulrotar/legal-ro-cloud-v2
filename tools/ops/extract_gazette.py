@@ -5,10 +5,10 @@ Extract one or more gazette PDFs to structured JSON.
 Usage:
     uv run python scripts/extract_gazette.py laws/2017/01/30/MO_PI_76_2017-01-30.pdf
     uv run python scripts/extract_gazette.py laws/2017/      # all PDFs under a directory
-    uv run python scripts/extract_gazette.py --validate-only extracted/2017/01/30/MO_PI_76_2017-01-30.json
+    uv run python scripts/extract_gazette.py --validate-only db/extracted/2017/01/30/MO_PI_76_2017-01-30.json
 
 Options:
-    --out DIR       Output directory (default: extracted/)
+    --out DIR       Output directory (default: db/extracted/)
     --validate      Run validation after extraction and print report
     --validate-only Load existing JSON and validate without re-extracting
     --strict        Exit with code 1 if any ERROR is found
@@ -29,7 +29,7 @@ from legalro_processing.gazette_validator import validate_gazette, format_report
 def main() -> int:
     parser = argparse.ArgumentParser(description="Extract gazette PDFs to structured JSON")
     parser.add_argument("paths", nargs="+", help="PDF file(s) or directories to extract")
-    parser.add_argument("--out", default="extracted", help="Output directory (default: extracted/)")
+    parser.add_argument("--out", default="db/extracted", help="Output directory (default: db/extracted/)")
     parser.add_argument("--validate", action="store_true", help="Validate after extraction")
     parser.add_argument("--validate-only", action="store_true", help="Validate existing JSON, skip extraction")
     parser.add_argument("--strict", action="store_true", help="Exit 1 if any ERROR found")

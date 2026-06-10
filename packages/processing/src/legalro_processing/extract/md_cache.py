@@ -7,7 +7,7 @@ Caching it means:
   3. The sha256 of the source PDF is embedded in the file header so cache
      invalidation is automatic when the PDF changes.
 
-File layout (md_cache/{year}/{month}/{day}/{gazette_id}.md):
+File layout (db/md_cache/{year}/{month}/{day}/{gazette_id}.md):
   <!--legalro:sha256={sha256}-->
   <!--legalro:era={era}-->
   <!--legalro:source={filename}-->
@@ -23,7 +23,7 @@ from pathlib import Path
 _HEADER_SHA = re.compile(r'<!--legalro:sha256=([0-9a-f]{64})-->')
 _HEADER_ERA = re.compile(r'<!--legalro:era=(\w+)-->')
 
-DEFAULT_MD_CACHE_DIR = "md_cache"
+DEFAULT_MD_CACHE_DIR = "db/md_cache"
 
 
 def cache_path(pdf_path: str | Path, md_cache_dir: str | Path = DEFAULT_MD_CACHE_DIR) -> Path:

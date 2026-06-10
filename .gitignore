@@ -11,12 +11,11 @@ __pycache__/
 /tmp/
 
 # pipeline artifacts (Stage A bundles, caches, loader state)
-out/
+db/
 .cache/
 .load_state.json
 
 # data (kept local; not committed)
-extracted/
 laws/
 
 # macOS
@@ -25,13 +24,10 @@ laws/
 .claude/
 reports/
 
-# extraction outputs (local runs; never committed)
+# Docling markdown cache — now lives under db/ (covered by db/ rule above)
+
+# legacy paths (kept for safety during transition)
+out/
 extracted/
 extracted_*/
-
-# Docling markdown cache (large; regenerated on-demand)
-md_cache/
-
-# Stage A bundles (embeddings + chunks; loaded into MongoDB, not versioned)
 bundle_*/
-out/

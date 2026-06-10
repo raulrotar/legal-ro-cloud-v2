@@ -49,6 +49,21 @@ class Annex:
 
 
 @dataclass
+class Table:
+    """A financial / tabular region extracted from a gazette page.
+
+    Table-dense pages (e.g. AEP party-financing reports) are diverted from
+    the act segmenter to avoid phantom acts.  Each table is stored verbatim
+    as a Markdown pipe-table and ingested as a retrievable chunk with
+    chunk_type='financial_table'.
+    """
+    markdown: str            # verbatim pipe-table markdown
+    page: int                # 0-based PDF page index (best guess from page-break markers)
+    title: str               # nearest preceding heading line, or ""
+    n_rows: int              # number of data rows (excludes separator row)
+
+
+@dataclass
 class LegalAct:
     """
     One legal act extracted from a gazette issue.
@@ -118,3 +133,6 @@ class GazetteDocument:
     extracted_at: str              # ISO 8601 datetime
     is_bis: bool = False           # True for "294Bis" variant issues; default for old JSONs
     extraction_warnings: list[str] = field(default_factory=list)
+
+    # ── Tables (table-dense pages diverted from act segmenter) ────────
+    tables: list["Table"] = field(default_factory=list)

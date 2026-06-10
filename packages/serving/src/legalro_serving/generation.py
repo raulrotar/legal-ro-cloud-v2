@@ -25,14 +25,7 @@ def _print_usage(usage: dict, label: str = "") -> None:
 def run_query_hybrid(question: str, settings: Settings) -> str:
     """Hybrid: agentic+thinking first (bounded by timeout + max_tokens),
     falling back to single-turn no-thinking RAG on any failure.
-
-    Agentic mode requires tool-calling support. MLX provider skips it
-    because mlx_lm's OpenAI-compat server doesn't reliably support function
-    calling — attempting it always produces a ModelHTTPError.
     """
-    # MLX's OpenAI-compat server doesn't support function calling reliably
-    if settings.llm.provider == "mlx":
-        return run_query(question, settings)
 
     agent = create_agent(settings)
     agentic_timeout = settings.llm.agentic_timeout
@@ -94,7 +87,6 @@ def run_query(question: str, settings: Settings, _retries: int = 3) -> str:
                     "temperature": settings.llm.temperature,
                     "top_k": 1,
                     "seed": 42,
-                    **({"chat_template_kwargs": {"enable_thinking": False}} if settings.llm.provider == "mlx" else {}),
                 },
                 timeout=120,
             )

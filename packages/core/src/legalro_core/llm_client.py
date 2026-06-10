@@ -53,7 +53,7 @@ def loads_lenient(raw: str) -> Any:
     """Parse JSON from an LLM response that may contain extra tokens or fences.
 
     Handles:
-    - EOS tokens appended by mlx_lm.server: ``<|im_end|>``, ``<|eot_id|>``, ``</s>``
+    - EOS tokens appended by local servers (Ollama, vLLM): ``<|im_end|>``, ``<|eot_id|>``, ``</s>``
     - Markdown code fences: ```json … ``` or ``` … ```
     - Leading/trailing whitespace
     - Multiple JSON objects on one line (takes the first balanced ``{…}``)

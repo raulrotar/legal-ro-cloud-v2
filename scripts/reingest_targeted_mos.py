@@ -27,51 +27,51 @@ TARGETS = [
     {
         "mode": "reingest",
         "source_issue_id": "PI_1_1989",
-        "json_path": "extracted/1989/12/22/MO_PI_1_1989-12-22.json",
+        "json_path": "db/extracted/1989/12/22/MO_PI_1_1989-12-22.json",
         "label": "MO_PI_1_1989 (scanned fragment merge)",
     },
     {
         "mode": "reingest",
         "source_issue_id": "PI_2_1989",
-        "json_path": "extracted/1989/12/25/MO_PI_2_1989-12-25.json",
+        "json_path": "db/extracted/1989/12/25/MO_PI_2_1989-12-25.json",
         "label": "MO_PI_2_1989 (scanned fragment merge — Q35)",
     },
     {
         "mode": "reingest",
         "source_issue_id": "PI_3_1989",
-        "json_path": "extracted/1989/12/26/MO_PI_3_1989-12-26.json",
+        "json_path": "db/extracted/1989/12/26/MO_PI_3_1989-12-26.json",
         "label": "MO_PI_3_1989 (scanned fragment merge — Q33/Q34 context)",
     },
     {
         "mode": "reingest",
         "source_issue_id": "PI_4_1989",
-        "json_path": "extracted/1989/12/27/MO_PI_4_1989-12-27.json",
+        "json_path": "db/extracted/1989/12/27/MO_PI_4_1989-12-27.json",
         "label": "MO_PI_4_1989 (ghost suppression)",
     },
     {
         "mode": "reingest",
         "source_issue_id": "PI_5_1989",
-        "json_path": "extracted/1989/12/27/MO_PI_5_1989-12-27.json",
+        "json_path": "db/extracted/1989/12/27/MO_PI_5_1989-12-27.json",
         "label": "MO_PI_5_1989 (scanned fragment merge + ghost suppression)",
     },
     {
         "mode": "reingest",
         "source_issue_id": "PI_6_1989",
-        "json_path": "extracted/1989/12/29/MO_PI_6_1989-12-29.json",
+        "json_path": "db/extracted/1989/12/29/MO_PI_6_1989-12-29.json",
         "label": "MO_PI_6_1989 (scanned fragment merge + ghost suppression)",
     },
     # ── MO_820_2007: ghost act suppression (footnote-only acts removed)
     {
         "mode": "reingest",
         "source_issue_id": "PI_820_2007",
-        "json_path": "extracted/2007/12/03/MO_PI_820_2007-12-03.json",
+        "json_path": "db/extracted/2007/12/03/MO_PI_820_2007-12-03.json",
         "label": "MO_PI_820_2007 (ghost suppression + metadata reclassify)",
     },
     # ── MO_311_2026: cotizatii section title fix + AEP/ANSVSA reclassification
     {
         "mode": "reingest",
         "source_issue_id": "PI_311_2026",
-        "json_path": "extracted/2026/04/20/MO_PI_311_2026-04-20.json",
+        "json_path": "db/extracted/2026/04/20/MO_PI_311_2026-04-20.json",
         "label": "MO_PI_311_2026 (cotizatii title fix + AEP/ANSVSA reclassify — Q56)",
     },
 ]

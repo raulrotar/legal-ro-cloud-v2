@@ -1,21 +1,26 @@
 llm:
-  provider: "mlx"
-  base_url: "http://localhost:8080/v1"
-  model: "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"
+  provider: "ollama"
+  base_url: "http://localhost:11434/v1"
+  model: "llama3.2-vision:11b"      # used by agentic/chat features
   max_tokens: 16384
   temperature: 0.1
   agentic_max_tokens: 4096
   agentic_timeout: 90.0
 
 embeddings:
-  provider: "mlx"
-  model: "nomic-text-v1.5"
-  dimensions: 768
-  batch_size: 32
+  provider: "ollama"
+  model: "bge-m3"
+  dimensions: 1024
+  batch_size: 64            # Ollama handles batching server-side; larger batches are fine
 
 ocr:
-  provider: "llamaparse"   # uses LLAMA_CLOUD_API_KEY; fall back to ocrmac for SCANNED if unset
+  provider: "docling"           # fully local — no API key needed
   language: "ro"
+  # GLM-OCR for scanned era (1989 gazettes): vision model, correct diacritics
+  # Set scanned_provider: "docling" to revert to Docling RapidOCR for scanned
+  scanned_provider: "glm-ocr"
+  glm_model: "glm-ocr:latest"
+  glm_dpi: 200            # tiled OCR — 200 DPI page splits into two ~1650x1170 tiles, both under Ollama's 2048px clip limit
 
 mongodb:
   uri: "mongodb://localhost:27017/?directConnection=true"
@@ -31,29 +36,40 @@ search:
   parent_doc_top_n: 3
   max_parent_chars: 8000
 
-# ── LLM-based extraction (Option C: Docling→MD→LLM→JSON) ────────────────────
-# base_url is empty → inherits from llm.base_url above (http://localhost:8080/v1)
-# Start the server first:
-#   mlx_lm.server --model numind/NuExtract3-mlx-mxfp8 --port 8080
+# ── Extraction pipeline (Option C: GLM-OCR/Docling→MD→regex→repair) ─────────
+# Primary extraction is now deterministic (regex, no LLM on the happy path).
+# gemma4 is no longer used.  Start Ollama: ollama serve
+# Required models: ollama pull glm-ocr:latest && ollama pull llama3.2-vision:11b
 extraction_llm:
   enabled: true
   mode: "md_llm"                      # Option C pipeline
   metadata_enabled: true
   segmentation_enabled: false
   vlm_enabled: false
-  md_cache_dir: "md_cache"            # intermediate .md files (human-inspectable)
-  edit_distance_threshold: 0.15       # max allowed edit ratio for LLM body-text correction
-  base_url: ""                        # inherits http://localhost:8080/v1
-  model: "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"   # best local: 96.9% accuracy, standard prompts
+  md_cache_dir: "db/md_cache"         # intermediate .md files (human-inspectable)
+  edit_distance_threshold: 0.15       # kept for compatibility (unused by primary path)
+  base_url: ""                        # inherits http://localhost:11434/v1
+  model: "llama3.2-vision:11b"        # unused by primary path; kept for config compat
   temperature: 0.0
-  max_tokens: 4096   # raised from 2048 — long ORDINs were truncating mid-JSON
-  max_retries: 2
-  # ── Fallback model for validation-triggered retries ──────────────────────
-  # When validation finds ERROR-level issues (wrong act_number, UNKNOWN type,
-  # etc.) extraction is retried with this model.  Leave fallback_model empty
-  # to retry with the same model.
-  # Example: switch to a larger/more capable model for hard cases.
-  fallback_model: "numind/NuExtract3-mlx-mxfp8"
-  fallback_base_url: ""               # empty → same as base_url (http://localhost:8080/v1)
+  max_tokens: 4096
+  max_retries: 0                      # no per-act retries — repair pass handles bad acts
+  fallback_model: ""
+  fallback_base_url: ""
   fallback_api_key: ""
-  fallback_max_tokens: 0              # 0 → same as max_tokens
+  fallback_max_tokens: 0
+
+# ── Extraction toggles ───────────────────────────────────────────────────────
+extraction:
+  table_triage_enabled: true  # divert table-dense pages from act segmenter
+  annex_tables_fitz: true     # ruled annex tables via PyMuPDF find_tables
+                              # (multi-page stitch; replaces TableFormer output
+                              # when a gazette has >=20 triaged table regions)
+
+# ── Vision-LLM repair pass ───────────────────────────────────────────────────
+# Fires ONLY for acts that fail inline validation (ACT_NUMBER_ZERO,
+# DOC_TYPE_UNKNOWN, etc.).  Sends PDF page images + broken fields to
+# llama3.2-vision:11b.  Memory: ~7.9 GB, loaded on-demand after Docling is done.
+repair_llm:
+  enabled: true
+  model: "glm-ocr:latest"   # llama3.2-vision requires Ollama >=0.4; use glm-ocr (vision, 2.2 GB) until upgrade
+  base_url: ""              # inherits llm.base_url

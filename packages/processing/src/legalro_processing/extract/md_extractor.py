@@ -56,7 +56,92 @@ def extract_markdown(pdf_path: str | Path, era: Era, settings: "Settings | None"
         return _extract_glm_ocr_md(path, era, settings)
 
     # ── Docling (local, all other eras) ──────────────────────────────────────
-    return _extract_docling_md(path, era)
+    md = _extract_docling_md(path, era)
+
+    # ── Hybrid router: escalate Docling failures to GLM-OCR ─────────────────
+    # Docling's layout stage drops/merges column content on multi-act pages
+    # (architectural — persists with layout-heron).  When the completeness
+    # check finds >=2 acts missing or merged, re-extract the whole document
+    # through the verified GLM-OCR tiled path (OmniDocBench v1.5 #1; reads
+    # every detected region, so closing blocks and column twins survive).
+    # Escalation threshold: small defect counts stay on the (free) text-layer
+    # recovery path — md_act_recovery + fitz_enrich already fix isolated
+    # missing closings/bodies.  Whole-doc GLM-OCR (~9 s/page) is only worth it
+    # when Docling broke a substantial share of the document.
+    _n_fail = _docling_failure_count(md, path, era)
+    if _n_fail >= 6:
+        print(f"[hybrid-router] {Path(path).stem}: Docling output incomplete — "
+              f"escalating to GLM-OCR structured pass", file=sys.stderr, flush=True)
+        try:
+            glm_md = _extract_glm_ocr_md(path, era, settings, structured=True)
+            # Adoption metric: missing CLOSING NUMBERS only.  The unique-tail
+            # check compares verbatim against the PDF text layer, which only
+            # a text-layer copier (Docling) can match exactly — OCR-derived
+            # text would always "lose" on it even when more complete.
+            glm_fail = _docling_failure_count(glm_md, path, era, count_tails=False)
+            doc_fail = _docling_failure_count(md, path, era, count_tails=False)
+            # Bloat guard: repetition residue can triple the output volume
+            # (MO_PI_2_2007: 431K chars vs a 141K text layer).  A bloated MD
+            # mints phantom acts downstream — completeness is not worth that.
+            _bloated = len(glm_md) > 1.5 * max(len(md), 10_000)
+            if glm_fail < doc_fail and not _bloated:
+                print(f"[hybrid-router] {Path(path).stem}: GLM-OCR adopted "
+                      f"(missing closings {doc_fail} → {glm_fail})", file=sys.stderr, flush=True)
+                # marker tells text-layer-verbatim checks (recovery tails)
+                # that this MD is OCR-derived and won't match exactly
+                return "<!-- legalro:md-source=glm-ocr -->\n" + glm_md
+            print(f"[hybrid-router] {Path(path).stem}: GLM-OCR not better "
+                  f"({glm_fail} vs {doc_fail} missing closings) — keeping Docling",
+                  file=sys.stderr, flush=True)
+        except Exception as exc:
+            print(f"[hybrid-router] {Path(path).stem}: GLM-OCR escalation failed ({exc})",
+                  file=sys.stderr, flush=True)
+    return md
+
+
+def _docling_failure_count(md: str, pdf_path: str, era: Era, count_tails: bool = True) -> int:
+    """Count acts whose closing number or unique body tail is absent from the
+    MD — the page-router's escalation signal (same logic the recovery pass
+    uses, but counting instead of patching)."""
+    try:
+        import fitz
+        from legalro_core.normalize import normalize_text
+        from legalro_processing.extract.md_act_recovery import (
+            _closing_numbers, _fold_ws,
+        )
+        import re as _re
+
+        doc = fitz.open(str(pdf_path))
+        pdf_text = "\n".join(p.get_text() for p in doc)
+        doc.close()
+        if len(pdf_text.strip()) < 500:
+            return 0
+        pdf_text = normalize_text(pdf_text, era)
+        closings = _closing_numbers(pdf_text)
+        md_digits = {d for d, _, _ in _closing_numbers(md)}
+        md_folded = _fold_ws(md)
+        ends = [e for _, _, e in closings]
+        failures = 0
+        for d, s, e in closings:
+            prev_end = max((pe for pe in ends if pe < s), default=0)
+            span = pdf_text[prev_end:e]
+            if not (120 <= len(span) <= 25_000):
+                continue
+            if d not in md_digits:
+                failures += 1
+                continue
+            if not count_tails:
+                continue
+            parts = _re.split(
+                r"PRE[ȘS]EDINTELE\s+ROM[ÂA]NIEI|Bucure[șs]ti,\s*\d{1,2}\s+\w+\s+\d{4}",
+                span,
+            )
+            tail = _fold_ws(max(parts, key=len))[-120:]
+            if len(tail) >= 60 and tail not in md_folded:
+                failures += 1
+        return failures
+    except Exception:
+        return 0
 
 
 def _provider(settings: "Settings | None") -> str:
@@ -65,12 +150,45 @@ def _provider(settings: "Settings | None") -> str:
     return getattr(settings.ocr, "provider", "docling")
 
 
-def _extract_glm_ocr_md(pdf_path: str, era: Era, settings: "Settings | None" = None) -> str:
-    """Use GLM-OCR (vision LLM) to OCR a scanned PDF page-by-page.
+_OCR_PROMPT = (
+    "Transcrie exact textul din această imagine dintr-un document oficial "
+    "românesc. Păstrează diacriticile corecte (ț, ș, ă, î, â). Transcrie "
+    "fiecare rând o singură dată, nu repeta nimic. "
+    "Returnează doar textul, fără explicații."
+)
 
-    Better than Docling RapidOCR for 1989 scanned era: correct diacritics,
-    more content recovered, ~13 s/page, no 3 GB OCR model competing for RAM.
-    Returns a single Markdown string with pages separated by a comment marker.
+# Structured mode (hybrid-router escalation for born-digital pages): asks for
+# Markdown so headings survive for the act segmenter. Left column first —
+# gazette text flows down columns.
+_OCR_PROMPT_STRUCTURED = (
+    "Convertește această pagină dintr-un document oficial românesc în Markdown. "
+    "Citește coloana din stânga complet, apoi coloana din dreapta. "
+    "Folosește ## pentru titlurile de acte (DECRET, LEGE, HOTĂRÂRE, ORDIN, DECIZIE) "
+    "și pentru instituții (PREȘEDINTELE ROMÂNIEI, GUVERNUL ROMÂNIEI). "
+    "Păstrează diacriticile corecte (ț, ș, ă, î, â). Transcrie fiecare rând o "
+    "singură dată, nu repeta nimic. Returnează doar Markdown, fără explicații."
+)
+
+# Retry temperatures: 0 first (deterministic), one escalation to break
+# repetition loops (olmOCR's recipe).  A third attempt almost never converges
+# and cost up to ~10 min/page; the duplicate-block collapse + dedup handle
+# the residue instead.
+_RETRY_TEMPS = (0.0, 0.4)
+
+
+def _extract_glm_ocr_md(pdf_path: str, era: Era, settings: "Settings | None" = None,
+                        structured: bool = False) -> str:
+    """OCR a scanned PDF with a local vision LLM, tile-by-tile with verification.
+
+    The Ollama glm-ocr port clips images >2048px (ollama#14114) and aborts
+    generation on token-repeat (ollama#14117) — both cause SILENT page loss.
+    Defenses, in order:
+      1. tile each page below the size limit along whitespace cuts
+         (page_tiles.tile_page), preserving column reading order;
+      2. per-tile repetition detection + retry with escalating temperature;
+      3. per-page Tesseract oracle gate (ocr_verify.verify_page): a page whose
+         output covers too little of what Tesseract saw is re-OCR'd once and
+         flagged in a .verify.json sidecar if it still fails.
     """
     import base64
     import fitz  # pymupdf
@@ -80,39 +198,113 @@ def _extract_glm_ocr_md(pdf_path: str, era: Era, settings: "Settings | None" = N
     except ImportError as exc:
         raise ImportError("ollama Python SDK not installed. Run: uv add ollama") from exc
 
+    from legalro_processing.extract import ocr_verify
+    from legalro_processing.extract.page_tiles import tile_page, pixmap_to_gray, crop_png
+
     _name = Path(pdf_path).stem
     _cfg = getattr(settings, "ocr", None)
     _model = getattr(_cfg, "glm_model", "glm-ocr:latest") if _cfg else "glm-ocr:latest"
     _dpi   = int(getattr(_cfg, "glm_dpi", 200)) if _cfg else 200
 
-    print(f"[glm-ocr] {_name} | start (era={era.value}, model={_model}, dpi={_dpi})", file=sys.stderr, flush=True)
+    print(f"[glm-ocr] {_name} | start (era={era.value}, model={_model}, dpi={_dpi}, tiled)", file=sys.stderr, flush=True)
     _t0 = time.time()
 
-    doc = fitz.open(pdf_path)
-    mat = fitz.Matrix(_dpi / 72, _dpi / 72)
     client = _ollama.Client()
-    pages_md: list[str] = []
 
-    for i, page in enumerate(doc):
-        _pt = time.time()
-        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
-        png_bytes = pix.tobytes("png")
-        b64 = base64.b64encode(png_bytes).decode()
+    _prompt = _OCR_PROMPT_STRUCTURED if structured else _OCR_PROMPT
 
+    def _ocr_image(png_bytes: bytes, temperature: float) -> str:
         resp = client.chat(
             model=_model,
             messages=[{
                 "role": "user",
-                "content": (
-                    "Transcrie exact textul din această imagine de pagină dintr-un "
-                    "document oficial românesc. Păstrează diacriticile corecte (ț, ș, ă, î, â). "
-                    "Returnează doar textul, fără explicații."
-                ),
-                "images": [b64],
+                "content": _prompt,
+                "images": [base64.b64encode(png_bytes).decode()],
             }],
-            options={"temperature": 0},
+            options={"temperature": temperature, "num_ctx": 16384},
         )
-        page_text = (resp.message.content or "").strip()
+        return (resp.message.content or "").strip()
+
+    def _ocr_tile_with_retry(png_bytes: bytes) -> tuple[str, bool]:
+        """OCR one tile; retry on repetition loop. Returns (text, clean)."""
+        best = ""
+        for temp in _RETRY_TEMPS:
+            text = _ocr_image(png_bytes, temp)
+            if ocr_verify.repeated_shingle(text) is None:
+                return text, True
+            if len(text) > len(best):
+                best = text
+        return best, False
+
+    doc = fitz.open(pdf_path)
+    mat = fitz.Matrix(_dpi / 72, _dpi / 72)
+    pages_md: list[str] = []
+    verifications: list[dict] = []
+
+    for i, page in enumerate(doc):
+        _pt = time.time()
+        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
+        gray = pixmap_to_gray(pix)
+        full_png = pix.tobytes("png")
+
+        def _ocr_whole_page(split_columns: bool = False) -> str:
+            tiles = tile_page(gray, split_columns=split_columns)
+            parts: list[str] = []
+            for t in tiles:
+                text, clean = _ocr_tile_with_retry(crop_png(gray, t))
+                if not clean:
+                    print(f"[glm-ocr] {_name} | page {i+1} tile {t} — repetition persisted",
+                          file=sys.stderr, flush=True)
+                if text:
+                    parts.append(text)
+            # collapse adjacent duplicate line blocks (loop residue survives
+            # retries when copies differ in case/typos)
+            return ocr_verify.collapse_repeated_line_blocks("\n\n".join(parts))
+
+        page_text = _ocr_whole_page()
+
+        # ── Oracle gate: Tesseract sees the whole page; we must match it ──
+        try:
+            oracle_text = ocr_verify.tesseract_page_text(full_png)
+        except (FileNotFoundError, RuntimeError) as exc:
+            oracle_text = ""
+            print(f"[glm-ocr] {_name} | page {i+1} — oracle unavailable ({exc}); gate skipped",
+                  file=sys.stderr, flush=True)
+
+        if oracle_text:
+            v = ocr_verify.verify_page(page_text, oracle_text, page_index=i)
+
+            # Escalation 1: re-OCR with column-split tiles — but only for
+            # UNDER-delivery (content loss).  Over-emission/repetition pages
+            # don't gain from re-OCR (the loop reproduces); collapse + dedup
+            # handle them, so skip the expensive second pass.
+            if not v.passed and v.word_ratio < 0.75:
+                print(f"[glm-ocr] {_name} | page {i+1} FAILED gate ({'; '.join(v.reasons)}) "
+                      f"— escalating to column-split OCR", file=sys.stderr, flush=True)
+                retry_text = _ocr_whole_page(split_columns=True)
+                rv = ocr_verify.verify_page(retry_text, oracle_text, page_index=i)
+                if rv.passed or rv.coverage > v.coverage:
+                    page_text, v = retry_text, rv
+
+            # Escalation 2: the Tesseract oracle text itself.  Its diacritics
+            # are weaker but it never drops half a page; when the VLM is still
+            # under-delivering, completeness wins.
+            if not v.passed and v.word_ratio < 0.75:
+                t_words = len(oracle_text.split())
+                if t_words > len(page_text.split()):
+                    page_text = (
+                        "<!-- legalro:ocr-fallback=tesseract -->\n" + oracle_text.strip()
+                    )
+                    v = ocr_verify.verify_page(page_text, oracle_text, page_index=i)
+                    v.reasons.append("fell back to tesseract oracle text")
+                    print(f"[glm-ocr] {_name} | page {i+1} — VLM under-delivered; "
+                          f"using tesseract text ({t_words} words)", file=sys.stderr, flush=True)
+
+            verifications.append(v.as_dict())
+            if not v.passed:
+                print(f"[glm-ocr] {_name} | page {i+1} STILL FAILING gate: {'; '.join(v.reasons)}",
+                      file=sys.stderr, flush=True)
+
         pages_md.append(page_text)
         print(
             f"[glm-ocr] {_name} | page {i+1}/{len(doc)} — {len(page_text)} chars +{time.time()-_pt:.1f}s",
@@ -120,6 +312,20 @@ def _extract_glm_ocr_md(pdf_path: str, era: Era, settings: "Settings | None" = N
         )
 
     doc.close()
+
+    # Sidecar verification report next to the cached MD
+    if verifications:
+        import json
+        from legalro_processing.extract import md_cache as _md_cache
+        ecfg = getattr(settings, "extraction_llm", None)
+        md_dir = getattr(ecfg, "md_cache_dir", "db/md_cache") if ecfg else "db/md_cache"
+        sidecar = _md_cache.cache_path(pdf_path, md_dir).with_suffix(".verify.json")
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(json.dumps(verifications, ensure_ascii=False, indent=1), encoding="utf-8")
+        n_fail = sum(1 for v in verifications if not v["passed"])
+        print(f"[glm-ocr] {_name} | verification: {len(verifications)-n_fail}/{len(verifications)} pages passed → {sidecar}",
+              file=sys.stderr, flush=True)
+
     markdown = "\n\n<!-- legalro:page-break -->\n\n".join(pages_md)
     print(f"[glm-ocr] {_name} | done {len(markdown):,} chars +{time.time()-_t0:.1f}s", file=sys.stderr, flush=True)
     return markdown
@@ -130,6 +336,14 @@ def _extract_docling_md(pdf_path: str, era: Era) -> str:
     _t0 = time.time()
     _name = Path(pdf_path).stem
     print(f"[docling] {_name} | start (era={era.value})", file=sys.stderr, flush=True)
+
+    # BROKEN eras: repair the ToUnicode CMaps first so Docling reads correct
+    # diacritics directly.  Docling folds the mojibake quote glyphs („ ‚) to
+    # ASCII '/, BEFORE the text-level normalization table can map them to ă/â,
+    # which is unrecoverable; fixing the font mapping at the source is exact.
+    if era in (Era.BROKEN_2007, Era.BROKEN_2002):
+        from legalro_processing.extract.cmap_fix import fix_tounicode
+        pdf_path = str(fix_tounicode(pdf_path, era))
 
     try:
         from docling.document_converter import DocumentConverter, PdfFormatOption

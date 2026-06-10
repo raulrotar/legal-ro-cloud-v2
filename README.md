@@ -200,6 +200,77 @@ laws/
         MO_PI_311_2026-04-20.pdf
 ```
 
+### Extraction architecture
+
+```
+PDF
+ │
+ ├─ era=SCANNED (1989) ────→ GLM-OCR (glm-ocr:latest, 2.2 GB)
+ │                            page-by-page vision, ~13 s/page
+ │                            correct diacritics (ț/ș/ă/î)
+ │
+ ├─ era=BROKEN_2007 ─────→ Docling
+ │                            visual render recovers mojibake glyphs
+ │
+ └─ era=MODERN/HYBRID ───→ Docling
+                             text layer + TableFormer (no OCR)
+                                   │
+                            md_cache (sha256-keyed .md files)
+                                   │
+                      fitz_enrich — PyMuPDF injects missing
+                       closing blocks from PDF text layer
+                                   │
+                      md_segmenter → per-act MdActBlock list
+                       (era-aware thresholds)
+                                   │
+               ┌── per-act loop ──────────────────────────┐
+               │  Stage 1:   md_rule_extractor (regex)    │
+               │             act_number, act_year,         │
+               │             doc_type, issuing_authority   │
+               │  Stage 1.5: secondary_analyzer            │
+               │             (fitz closing-sig recovery)   │
+               │  Stage 1.6: sumar positional fallback     │
+               │  Stage 2:   build from rule_draft — NO LLM│
+               └──────────────────────────────────────────┘
+                                   │
+                          phantom dedup
+                                   │
+               ┌── inline validation + vision repair ─────┐
+               │  validate_act_inline() per act            │
+               │                                           │
+               │  CLEAN ✅ → pass through                  │
+               │  FLAGGED ⚠️ (ACT_NUMBER_ZERO,             │
+               │              DOC_TYPE_UNKNOWN, …)         │
+               │        ↓                                  │
+               │  llama3.2-vision:11b (7.8 GB)            │
+               │  receives: PDF page images + broken       │
+               │   fields + error codes                    │
+               │  patches ONLY flagged fields              │
+               │  records repair_flag:true                 │
+               └───────────────────────────────────────────┘
+                                   │
+                          annex propagation
+                                   │
+                          GazetteDocument JSON
+```
+
+**Memory profile — single phase, no prewarm needed:**
+
+| Stage | Model | RAM |
+|-------|-------|-----|
+| MD extraction (scanned) | GLM-OCR | 2.2 GB |
+| MD extraction (other eras) | Docling | ~3 GB |
+| Per-act build | None — pure regex | ~0 |
+| Repair pass (flagged acts only) | llama3.2-vision:11b | 7.8 GB |
+
+Docling and the vision repair model never coexist — Docling is GC'd before the repair pass fires.
+
+**Required models:**
+```bash
+ollama pull glm-ocr:latest          # 2.2 GB — scanned era OCR
+ollama pull llama3.2-vision:11b     # 7.8 GB — vision repair pass
+```
+
 ### Two-stage pipeline
 
 **Stage A — Extract + embed (VPS / local):**
@@ -208,9 +279,9 @@ laws/
 uv run legalro-process extract --root laws/ --out out/ --extracted-dir extracted/
 ```
 
-1. PDF → Markdown (Docling; cached in `md_cache/`)
+1. PDF → Markdown via GLM-OCR (scanned era) or Docling (other eras); cached in `md_cache/`
 2. Markdown → per-act blocks (segmenter)
-3. Blocks → GazetteDocument JSON (LLM structurer; cached in `extracted/`)
+3. Blocks → GazetteDocument JSON (regex extraction + inline vision repair for flagged acts)
 4. JSON → chunks → bge-m3 embeddings
 5. Emit on-disk bundle under `out/`
 
@@ -284,7 +355,10 @@ packages/
     models.py           Era enum (SCANNED / HYBRID / MODERN / BROKEN_*)
     store.py            MongoDB connection pool
     embeddings.py       bge-m3 embed wrapper (sentence-transformers)
+    llm_client.py       Shared OpenAI-compat LLM client (Gemini / Ollama)
     normalize.py        Diacritics + mojibake repair + BM25 text normalization
+    md_normalize.py     Markdown-specific normalization helpers
+    act_number.py       Act number parsing and canonicalisation
     bundle.py           On-disk bundle read/write helpers
     retrieval/
       search.py         $vectorSearch + $search + Python RRF + metadata boost
@@ -293,24 +367,37 @@ packages/
   processing/src/legalro_processing/
     cli.py              Typer CLI: extract / extract-json / load / setup-indexes / reset-db
     extract_module.py   Standalone: PDF → GazetteDocument JSON (sha256 cache)
+    ingest_module.py    End-to-end ingest helper (extract + embed + load)
     bundle_writer.py    Emit gazette + chunks + edges to on-disk bundle
     loader.py           Idempotent bulk-upsert bundle → MongoDB
+    pipeline.py         Top-level orchestrator coordinating extract→embed→load
+    extraction_validator.py  Field-level validation with error codes
+    gazette_validator.py     Gazette-level cross-act consistency checks
+    fallback_merge.py        Orphan-act merge heuristics
+    run_ledger.py            Run tracking / audit log
     extract/
-      gazette_extractor.py  PDF → GazetteDocument (regex pipeline)
-      pipeline.py           Option C orchestrator: MD → LLM → GazetteDocument
-      era.py                Era detection (SCANNED / HYBRID / MODERN / BROKEN_*)
-      extract.py            Era-routed text extraction
-      md_extractor.py       PDF → full Markdown (Docling / LlamaParse)
-      md_cache.py           sha256-keyed Markdown cache
-      md_segmenter.py       Full MD → per-act MdActBlock list
-      llm_structurer.py     MdActBlock → metadata + corrected text (LLM)
-      llm_extract.py        Option B: LLM metadata / segmentation extraction
-      gazette_schema.py     GazetteDocument, LegalAct, SumarEntry dataclasses
-      metadata.py           Doc type, number, authority, title extraction
-      segment.py            Act segmentation via sumar pages + header patterns
-      sumar.py              TOC state-machine parser → page boundaries per act
-      structure.py          Header / footer / page-number stripping
-      ocr.py                Mistral / LlamaParse / docling / ocrmac dispatcher
+      gazette_extractor.py   PDF → GazetteDocument (regex pipeline)
+      pipeline.py            Option C orchestrator: GLM-OCR/Docling→MD→regex→repair
+      era.py                 Era detection (SCANNED / HYBRID / MODERN / BROKEN_*)
+      extract.py             Era-routed text extraction
+      md_extractor.py        PDF → full Markdown (GLM-OCR for scanned, Docling otherwise)
+      docling_extractor.py   Docling-specific extraction wrapper
+      md_cache.py            sha256-keyed Markdown cache
+      md_segmenter.py        Full MD → per-act MdActBlock list
+      md_rule_extractor.py   Deterministic regex extractor (primary path)
+      md_table_extractor.py  Table-dense page triage and extraction
+      secondary_analyzer.py  PyMuPDF closing-sig recovery (Stage 1.5)
+      blocks.py              MdActBlock data structure
+      roles.py               Line-role classification helpers
+      gazette_schema.py      GazetteDocument, LegalAct, SumarEntry dataclasses
+      metadata.py            Doc type, number, authority, title extraction
+      segment.py             Act segmentation via sumar pages + header patterns
+      sumar.py               TOC state-machine parser → page boundaries per act
+      structure.py           Header / footer / page-number stripping
+      ocr.py                 LlamaParse / Docling / GLM-OCR dispatcher
+      llm_repair.py          Vision-LLM repair pass (on-demand, flagged acts only)
+      llm_extract.py         Option B: LLM metadata / segmentation extraction
+      llm_structurer.py      Legacy LLM structurer (unused; kept for reference)
     prepare/
       build.py              GazetteDocument → bundle docs (gazette + chunks)
       chunk.py              Token-aware chunking (article / paragraph / window)
@@ -330,29 +417,29 @@ packages/
     app.py              FastAPI: /runs /coverage /query-log (read-only observability)
 
 config/
-  cloud.yaml            Production config (Gemini 2.5 Flash, Atlas, bge-m3, LlamaParse)
-  local.yaml            Local dev config (local MongoDB, docling OCR)
-  staging.yaml          Staging config (separate Atlas DB)
+  cloud.yaml            Production config (gemini-3.1-flash-lite, Atlas, bge-m3, LlamaParse)
+  local.yaml            Local dev config (local MongoDB, Docling + GLM-OCR)
 
 scripts/
-  benchmark_local_llm.py  Benchmark local LLM extraction quality
-  compare_extractions.py  Side-by-side regex vs Option C accuracy comparison
-  reembed_bge_m3.py       Re-embed all chunks after model change
+  compare_extractions.py   Side-by-side diff of extraction outputs
   reingest_targeted_mos.py Targeted re-ingest of specific gazette issues
 
 tools/
   ops/
-    extract_gazette.py  CLI wrapper for standalone Phase 1 extraction
-    reembed.py          Re-embed all chunks
-    reingest.py         Re-ingest from cached JSONs (no re-OCR)
-    reset.py            Drop DB + clear cache + re-ingest
-    reclassify.py       Reclassify era for existing gazette records
-    setup_indexes.py    Create Atlas vector + full-text indexes
-    validate.py         Component health check
-  test_questions.py     Local question evaluation harness
+    extract_gazette.py   CLI wrapper for standalone extraction
+    glm_ocr_compare.py   GLM-OCR vs Docling output comparison
+    prewarm_md_cache.py  Pre-populate md_cache without full extraction
+    verify_md_coverage.py Check md_cache coverage vs laws/ directory
+    reembed.py           Re-embed all chunks after model change
+    reingest.py          Re-ingest from cached JSONs (no re-OCR)
+    reset.py             Drop DB + clear cache + re-ingest
+    reclassify.py        Reclassify era for existing gazette records
+    setup_indexes.py     Create Atlas vector + full-text indexes
+    validate.py          Component health check
+  test_questions.py      Local question evaluation harness
   test_questions_cloud.py Cloud question evaluation harness
-  evaluate_retrieval.py   Retrieval quality evaluation
-  generate_golden_set.py  Generate golden QA set
+  evaluate_retrieval.py  Retrieval quality evaluation
+  generate_golden_set.py Generate golden QA set
 
 tests/
   test_chunk.py         Chunker unit tests
@@ -381,5 +468,6 @@ Evaluated on 52 Romanian legal questions across all eras:
 | Cloud v1 | Regex | Gemini Flash Lite | 28 | 23 | 4 | 1 | 0 |
 | Cloud v2 | Regex | Gemini Flash Lite | 52 | 48 | 2 | 2 | 0 |
 | Option C | Docling→MD→LLM | Llama 3.1 8B | 52 | 50 | 2 | 0 | 0 |
+| Current (regex + vision repair) | GLM-OCR/Docling→MD→regex+repair | Gemini 3.1 Flash Lite | 52 | 48+ | — | — | — |
 
-Option C (Docling→Markdown→LLM structuring) achieves **96.8% accuracy** on the full test set with Llama 3.1 8B local extraction and Gemini for generation.
+The current pipeline replaces the per-act text-LLM with deterministic regex extraction (primary path, zero LLM calls on clean acts) and a vision repair pass (`llama3.2-vision:11b`) that fires only for acts that fail inline validation. Memory peak during extraction is ~7.8 GB (repair pass, on-demand only); query-side uses Gemini 3.1 Flash Lite.

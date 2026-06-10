@@ -1,4 +1,4 @@
-"""Embedding provider — sentence-transformers (cloud) or MLX (local)."""
+"""Embedding provider — Ollama (local), sentence-transformers (cross-platform), or MLX (Apple Silicon)."""
 from legalro_core.config import Settings
 
 _st_model = None
@@ -77,10 +77,38 @@ def _truncate_to_tokens(text: str, model) -> str:
     return model.tokenizer.decode(enc["input_ids"], skip_special_tokens=True)
 
 
+# ── Ollama (local server — manages its own model loading/unloading) ───────────
+
+def _embed_ollama(texts: list[str], settings: Settings, is_query: bool = False) -> list[list[float]]:
+    """Embed via Ollama's OpenAI-compatible /v1/embeddings endpoint.
+
+    Ollama keeps bge-m3 loaded while requests arrive and unloads it after
+    keep_alive (default 5 min), so there is no persistent in-process RAM cost.
+    """
+    import httpx
+
+    base_url = getattr(settings.llm, "base_url", "http://localhost:11434/v1")
+    model = settings.embeddings.model
+    if is_query and model == "bge-m3":
+        texts = [_BGE_M3_QUERY_INSTRUCTION + t for t in texts]
+
+    truncated = [t[:_ST_MAX_CHARS] for t in texts]
+    resp = httpx.post(
+        f"{base_url.rstrip('/')}/embeddings",
+        json={"model": model, "input": truncated},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return [item["embedding"] for item in data["data"]]
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def embed_texts(texts: list[str], settings: Settings, is_query: bool = False) -> list[list[float]]:
-    if settings.embeddings.provider == "sentence-transformers":
+    if settings.embeddings.provider == "ollama":
+        return _embed_ollama(texts, settings, is_query=is_query)
+    elif settings.embeddings.provider == "sentence-transformers":
         model = _get_st_model(settings)
         model.max_seq_length = _ST_MAX_SEQ_LEN
         if is_query and settings.embeddings.model == _BGE_M3_MODEL:

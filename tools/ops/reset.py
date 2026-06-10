@@ -5,7 +5,7 @@ rebuild search indexes.
 
 Usage:
     uv run python scripts/reset.py [--laws-dir laws/] [--config config/local.yaml]
-    uv run python scripts/reset.py --skip-extract   # keep extracted/ JSONs, only re-ingest
+    uv run python scripts/reset.py --skip-extract   # keep db/extracted/ JSONs, only re-ingest
 """
 import argparse
 import shutil
@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Full LegalRo project reset")
     p.add_argument("--laws-dir", default="laws", help="Directory containing PDF files (default: laws/)")
     p.add_argument("--config", default="config/local.yaml", help="Settings file (default: config/local.yaml)")
-    p.add_argument("--skip-extract", action="store_true", help="Keep existing extracted/ JSONs; only drop DB and re-ingest")
+    p.add_argument("--skip-extract", action="store_true", help="Keep existing db/extracted/ JSONs; only drop DB and re-ingest")
     p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
     return p.parse_args()
 
@@ -48,12 +48,12 @@ def drop_db(db) -> None:
 
 
 def delete_extracted(root: Path) -> None:
-    extracted_dir = root / "extracted"
+    extracted_dir = root / "db" / "extracted"
     if not extracted_dir.exists():
-        print("   extracted/ not found — nothing to delete")
+        print("   db/extracted/ not found — nothing to delete")
         return
     json_files = list(extracted_dir.rglob("*.json"))
-    print(f"   deleting {len(json_files)} JSON files from extracted/ …")
+    print(f"   deleting {len(json_files)} JSON files from db/extracted/ …")
     shutil.rmtree(extracted_dir)
     extracted_dir.mkdir()
     print()
@@ -188,7 +188,7 @@ def main() -> None:
         print(f"No PDFs found under {laws_dir}")
         sys.exit(1)
 
-    action = "Re-ingest only (keep extracted/ JSONs)" if args.skip_extract else "Full reset (drop DB + delete extracted/ JSONs + re-ingest)"
+    action = "Re-ingest only (keep db/extracted/ JSONs)" if args.skip_extract else "Full reset (drop DB + delete db/extracted/ JSONs + re-ingest)"
     print("══════════════════════════════════════════════════════════════════")
     print("  LegalRo Reset")
     print(f"  Mode    : {action}")
@@ -206,7 +206,7 @@ def main() -> None:
 
     # 2. Delete extracted JSONs (unless --skip-extract)
     if not args.skip_extract:
-        print("── Deleting extracted/ JSON cache ──────────────────────────────")
+        print("── Deleting db/extracted/ JSON cache ───────────────────────────")
         delete_extracted(root)
 
     # 3. Ingest all PDFs (Phase 1 extract + Phase 2 embed/store)

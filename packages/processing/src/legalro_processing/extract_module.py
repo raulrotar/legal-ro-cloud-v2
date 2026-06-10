@@ -2,11 +2,13 @@
 
 No database access, no embeddings. Pure: PDF in, JSON file out.
 
-After every extraction the resulting JSON is validated automatically.
-If ERROR-level issues are found (wrong act_number, UNKNOWN doc_type,
-LLM failures, etc.) extraction is retried up to MAX_RETRIES times.
-Remaining issues after all retries are preserved as extraction_warnings
-in the JSON so they're visible downstream.
+Extraction is single-pass: the PDF is processed once, the result is
+validated, and any remaining ERROR-level issues are annotated in the
+JSON as extraction_warnings for downstream consumers.  Per-act retries
+happen inside pipeline.py (each individual failing act is retried up to
+extraction_llm.max_retries times before the gazette finishes).
+End-of-batch recovery for still-flagged JSONs is handled by the
+fallback-merge pass in cli.py / fallback_merge.py.
 """
 from __future__ import annotations
 
@@ -19,8 +21,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from legalro_core.config import Settings
 
-DEFAULT_EXTRACTED_DIR = "extracted"
-MAX_RETRIES = 2   # maximum re-extraction attempts after first try
+DEFAULT_EXTRACTED_DIR = "db/extracted"
 
 # Must match gazette_extractor.FILENAME_PATTERN
 _FILENAME_RE = re.compile(
@@ -38,10 +39,10 @@ def run_extraction(
 
     Pipeline:
       1. Check sha256 cache — skip if JSON already matches PDF (unless force=True).
-      2. Extract PDF → GazetteDocument JSON.
+      2. Extract PDF → GazetteDocument JSON (per-act retries happen inside pipeline.py).
       3. Validate the JSON for ERROR-level issues.
-      4. Retry extraction (up to MAX_RETRIES) if fixable errors remain.
-      5. Append any unfixable issues to extraction_warnings in the JSON.
+      4. Append any remaining issues to extraction_warnings in the JSON.
+         End-of-batch fallback merge handles them from the source PDF.
 
     Returns the path to the written JSON file.
     """
@@ -62,46 +63,29 @@ def run_extraction(
         except Exception:
             pass  # corrupted cache — fall through to re-extract
 
-    # ── Extract + validate loop ───────────────────────────────────────────────
-    json_path: Path | None = None
-    active_settings = settings
+    # ── Extract + validate (single pass — per-act retries happen inside pipeline) ─
+    # The Option C pipeline (pipeline.py) retries each individual act up to
+    # extraction_llm.max_retries times before returning.  Re-running the entire
+    # gazette here would repeat all N acts just to fix a subset, which is expensive
+    # and ineffective.  We extract once, validate, annotate any remaining errors,
+    # and let the end-of-batch fallback merge handle them from the source PDF.
+    gazette = extract_gazette(path, settings)
+    json_path = save_gazette(gazette, out_dir)
 
-    for attempt in range(1 + MAX_RETRIES):
-        gazette = extract_gazette(path, active_settings)
-        json_path = save_gazette(gazette, out_dir)
+    issues = validate_file(json_path)
+    errors = [i for i in issues if i.severity == Severity.ERROR]
 
-        issues = validate_file(json_path)
-        errors = [i for i in issues if i.severity == Severity.ERROR]
-
-        if not errors:
-            if attempt > 0:
-                _log(f"[validate] {path.name} — clean after {attempt + 1} attempt(s)")
-            return json_path
-
+    if errors:
         error_summary = "; ".join(
             f"act[{i.act_index}] {i.check}: {i.message}" for i in errors
         )
+        _log(f"[validate] {path.name} — {len(errors)} error(s) remain after "
+             f"single-pass extraction; annotating JSON: {error_summary}")
+        _annotate_remaining_issues(json_path, errors)
+    else:
+        _log(f"[validate] {path.name} — clean")
 
-        if attempt < MAX_RETRIES:
-            json_path.unlink(missing_ok=True)
-            # Switch to fallback model on the next attempt if one is configured
-            fallback = _make_fallback_settings(settings, attempt)
-            if fallback is not active_settings:
-                ecfg = getattr(fallback, "extraction_llm", None)
-                model = getattr(ecfg, "model", "") or getattr(getattr(fallback, "llm", None), "model", "")
-                _log(f"[validate] {path.name} attempt {attempt + 1} — "
-                     f"{len(errors)} error(s), retrying with fallback model {model!r}: "
-                     f"{error_summary}")
-            else:
-                _log(f"[validate] {path.name} attempt {attempt + 1} — "
-                     f"{len(errors)} error(s), retrying: {error_summary}")
-            active_settings = fallback
-        else:
-            _log(f"[validate] {path.name} — {len(errors)} error(s) remain after "
-                 f"{1 + MAX_RETRIES} attempt(s); annotating JSON: {error_summary}")
-            _annotate_remaining_issues(json_path, errors)
-
-    return json_path  # type: ignore[return-value]
+    return json_path
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -113,54 +97,6 @@ def _expected_json_path(pdf_path: Path, out_dir: Path) -> Path | None:
         return None
     year, month, day = m.group(3), m.group(4), m.group(5)
     return out_dir / year / month / day / f"{pdf_path.stem}.json"
-
-
-def _make_fallback_settings(settings: "Settings", attempt: int) -> "Settings":
-    """Return a settings object that uses the fallback model for retries.
-
-    On attempt 0 the primary model is used; attempt 1+ switches to the
-    fallback model if one is configured.  If no fallback is set, returns
-    the same settings object (same model retried, which still helps when
-    temperature > 0 or the LLM output is non-deterministic).
-    """
-    if attempt == 0:
-        return settings
-
-    ecfg = getattr(settings, "extraction_llm", None)
-    if not ecfg:
-        return settings
-
-    fallback_model   = getattr(ecfg, "fallback_model", "")
-    fallback_base    = getattr(ecfg, "fallback_base_url", "")
-    fallback_key     = getattr(ecfg, "fallback_api_key", "")
-    fallback_tokens  = getattr(ecfg, "fallback_max_tokens", 0)
-
-    if not fallback_model:
-        # No fallback configured — retry with same model
-        return settings
-
-    # Build a shallow copy of settings with the extraction_llm fields patched.
-    # Pydantic v2: use model_copy; v1: copy() or manual dict round-trip.
-    try:
-        new_ecfg = ecfg.model_copy(update={
-            "model":      fallback_model,
-            "base_url":   fallback_base  or ecfg.base_url,
-            "api_key":    fallback_key   or ecfg.api_key,
-            "max_tokens": fallback_tokens or ecfg.max_tokens,
-        })
-        return settings.model_copy(update={"extraction_llm": new_ecfg})
-    except AttributeError:
-        # Pydantic v1 fallback
-        try:
-            new_ecfg = ecfg.copy(update={
-                "model":      fallback_model,
-                "base_url":   fallback_base  or ecfg.base_url,
-                "api_key":    fallback_key   or ecfg.api_key,
-                "max_tokens": fallback_tokens or ecfg.max_tokens,
-            })
-            return settings.copy(update={"extraction_llm": new_ecfg})
-        except Exception:
-            return settings
 
 
 def _annotate_remaining_issues(json_path: Path, errors: list) -> None:

@@ -16,6 +16,7 @@ members = ["packages/*"]
 
 [dependency-groups]
 dev = [
+    "ollama>=0.6.2",
     "pytest>=8.0",
     "ruff>=0.6",
 ]

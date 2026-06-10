@@ -25,9 +25,9 @@ from pathlib import Path
 from collections import defaultdict
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-BASELINE   = Path("extracted")
-OPTION_B   = Path("extracted_llm")
-OPTION_C   = Path("extracted_option_c")
+BASELINE   = Path("db/extracted")
+OPTION_B   = Path("db/extracted_llm")
+OPTION_C   = Path("db/extracted_option_c")
 
 # ── Mojibake signatures for broken Romanian encoding ──────────────────────────
 # Characters that indicate broken diacritics in BROKEN_2007 / BROKEN_2002 eras

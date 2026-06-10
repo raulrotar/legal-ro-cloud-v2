@@ -34,7 +34,7 @@ from legalro_processing.extract.llm_extract import (
     resolve_metadata_vlm,
 )
 from legalro_processing.extract.gazette_schema import (
-    GazetteDocument, LegalAct, SumarEntry, Article, Annex,
+    GazetteDocument, LegalAct, SumarEntry, Article, Annex, Table,
 )
 from legalro_core.models import Era
 
@@ -128,10 +128,12 @@ def extract_gazette(pdf_path: str | Path, settings=None) -> GazetteDocument:
             try:
                 from legalro_processing.extract import md_cache
                 _ecfg2 = getattr(settings, "extraction_llm", None) if settings else None
-                _md_dir = getattr(_ecfg2, "md_cache_dir", "md_cache") if _ecfg2 else "md_cache"
+                _md_dir = getattr(_ecfg2, "md_cache_dir", "db/md_cache") if _ecfg2 else "db/md_cache"
                 cached_md = md_cache.load(path, _md_dir)
                 if cached_md:
                     md_entries = _build_sumar_from_md(cached_md, [])
+                    if not md_entries and era == Era.SCANNED:
+                        md_entries = _build_sumar_from_scanned_text(cached_md)
                     if md_entries:
                         # Remove the "produced 0 entries" warning added above
                         warnings[:] = [w for w in warnings if "Sumar parsing produced 0 entries" not in w]
@@ -330,6 +332,7 @@ def load_gazette(json_path: str | Path) -> GazetteDocument:
     # Reconstruct nested dataclasses
     data["sumar"] = [SumarEntry(**e) for e in data.get("sumar", [])]
     data["acts"] = [_load_act(a) for a in data.get("acts", [])]
+    data["tables"] = [Table(**t) for t in data.get("tables", [])]
     return GazetteDocument(**data)
 
 
@@ -424,9 +427,10 @@ def _build_sumar(sumar_text: str, warnings: list[str], era: Era = Era.MODERN) ->
         title = " ".join(title_lines).strip()
         title = re.sub(r'^[—–\-]\s*', '', title)
         if title:
+            nr = act_number or _number_from_title(title)
             entries.append(SumarEntry(
-                act_number=act_number,
-                doc_type=_infer_doc_type(title, act_number),
+                act_number=nr,
+                doc_type=_infer_doc_type(title, nr),
                 title=title,
                 page_start=page_start,
                 page_end=page_end,
@@ -611,6 +615,7 @@ def _build_sumar_from_md(md_text: str, warnings: list[str]) -> list[SumarEntry]:
             if page_m:
                 page_start = int(page_m.group(1))
 
+        act_num = act_num or _number_from_title(title)
         entries.append(SumarEntry(
             act_number=act_num,
             doc_type=_infer_doc_type(title, act_num),
@@ -623,12 +628,84 @@ def _build_sumar_from_md(md_text: str, warnings: list[str]) -> list[SumarEntry]:
     return entries
 
 
+# "Decizia nr. 831 din 16 noiembrie 2006 referitoare la …" — entries whose
+# number lives inside the title instead of the leading "N./YEAR." column
+_NR_IN_TITLE = re.compile(
+    r"^(?:Decizia|Hot[ăa]r[âî]rea|Ordinul|Raportul|Circulara|Legea)\s+nr\.?\s*([\d.]+)",
+    re.IGNORECASE,
+)
+
+
+def _number_from_title(title: str) -> str:
+    m = _NR_IN_TITLE.match(title.strip())
+    return m.group(1).rstrip(".") if m else ""
+
+
+_SCANNED_SUMAR_ENTRY = re.compile(
+    r"(?<![\d.])(\d{1,3})\.\s*[—–-]+\s*"
+    r"(Decret\s*-\s*lege|Decret|Comunicat|Hot[ăa]r[îâ]rea?|Lege|Decizie)\b"
+    r"([^\n]*)",
+    re.IGNORECASE,
+)
+_SCANNED_SUMAR_COMUNICAT = re.compile(r"(?m)^\s*(Comunicat\b[^\n]*)")
+
+
+def _build_sumar_from_scanned_text(md_text: str) -> list[SumarEntry]:
+    """Parse sumar entries from OCR'd plain text (scanned 1989 era).
+
+    The OCR'd page 1 has no Markdown table; with the Tesseract fallback the
+    two sumar columns may even be INTERLEAVED line-by-line, so entries are
+    matched anywhere in the region, not at line starts.  Titles are therefore
+    unreliable (often cut at the column edge) and deliberately left EMPTY —
+    these entries exist for act-count/number reconciliation, while titles are
+    backfilled from the act bodies instead.
+    """
+    sumar_m = re.search(r"S\s*U\s*M\s*A\s*R|^SUMAR\s*$", md_text, re.MULTILINE)
+    if not sumar_m:
+        return []
+    # Sumar lives on page 1 — stop at the first page break
+    region = md_text[sumar_m.end():]
+    page_break = region.find("<!-- legalro:page-break -->")
+    if page_break != -1:
+        region = region[:page_break]
+
+    entries: list[SumarEntry] = []
+    seen: set[tuple[str, str]] = set()
+    for m in _SCANNED_SUMAR_ENTRY.finditer(region):
+        nr = m.group(1)
+        type_word = re.sub(r"\s*-\s*", "-", m.group(2)).strip()
+        doc_type = _infer_doc_type(type_word, nr)
+        key = (nr, doc_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(SumarEntry(
+            act_number=nr,
+            doc_type=doc_type,
+            title="",
+            page_start=0,
+            page_end=None,
+            category="",
+        ))
+    # Unnumbered communiqués (one entry per "Comunicat …" line)
+    for m in _SCANNED_SUMAR_COMUNICAT.finditer(region):
+        entries.append(SumarEntry(
+            act_number="",
+            doc_type="COMUNICAT",
+            title="",
+            page_start=0,
+            page_end=None,
+            category="",
+        ))
+    return entries
+
+
 _DOC_TYPE_PATTERNS = [
     (re.compile(r'\bordin\b', re.I), "ORDIN"),
-    (re.compile(r'\bhotărâre\b|\bhg\b', re.I), "HG"),
+    (re.compile(r'\bhotărârea?\b|\bhg\b', re.I), "HG"),
     (re.compile(r'\bdecret\s*-\s*lege\b', re.I), "DECRET_LEGE"),
     (re.compile(r'\bdecret\b', re.I), "DECRET"),
-    (re.compile(r'\bdecizie\b', re.I), "DECIZIE"),
+    (re.compile(r'\bdecizi[ae]\b', re.I), "DECIZIE"),
     (re.compile(r'\blege\b', re.I), "LEGE"),
     (re.compile(r'\bordonan[țt][ăa]\s+de\s+urgen[țt][ăa]\b', re.I), "OUG"),
     (re.compile(r'\bordonan[țt][ăa]\b', re.I), "ORDONANȚĂ"),

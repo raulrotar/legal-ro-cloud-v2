@@ -14,6 +14,8 @@ and optionally re-extract flagged files.
 Checks implemented
 ------------------
 ACT_NUMBER_ZERO          act_number == "0"                            ERROR
+ACT_NUMBER_MALFORMED     act_number is structurally invalid           ERROR
+                         (e.g. embedded date, stray letter, extra /)
 ACT_NUMBER_ABROGATION    act_number found in abrogation clause        ERROR
 ACT_NUMBER_SUSPICIOUS    act_number is a very common reference number WARNING
 DOC_TYPE_UNKNOWN         doc_type == "UNKNOWN"                        ERROR
@@ -33,6 +35,8 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+
+from legalro_core.act_number import NO_NUMBER_DOC_TYPES, is_malformed_act_number
 
 
 # ── Severity ──────────────────────────────────────────────────────────────────
@@ -65,7 +69,8 @@ _REQUIRES_BODY = {"HG", "OUG", "ORDONANȚĂ", "DECRET", "DECRET_LEGE",
                   "LEGE", "DCC", "DECIZIE", "ORDIN"}
 
 # doc types that legitimately have no own act number (communiqués, notices, corrections)
-_NO_NUMBER_TYPES = {"COMUNICAT", "RECTIFICARE", "ANUNT", "ANUNȚ"}
+# Imported from legalro_core.act_number; alias kept for local readability.
+_NO_NUMBER_TYPES = NO_NUMBER_DOC_TYPES
 
 # Numbers that appear very frequently in legal references (years, common refs)
 # and should not be used as act_numbers
@@ -112,7 +117,8 @@ def validate_file(json_path: Path) -> list[Issue]:
 
 def needs_reextraction(issues: list[Issue]) -> bool:
     """True if any ERROR-level issue is present that re-extraction can fix."""
-    fixable = {"ACT_NUMBER_ZERO", "ACT_NUMBER_ABROGATION", "DOC_TYPE_UNKNOWN", "LLM_FAILED"}
+    fixable = {"ACT_NUMBER_ZERO", "ACT_NUMBER_ABROGATION", "ACT_NUMBER_MALFORMED",
+               "DOC_TYPE_UNKNOWN", "LLM_FAILED"}
     return any(i.severity == Severity.ERROR and i.check in fixable for i in issues)
 
 
@@ -198,6 +204,17 @@ def _validate_gazette(gazette: dict, json_path: Path) -> list[Issue]:
                     f"({abrogation_nrs}) — likely confused with a referenced/abrogated act",
                 ))
 
+        # ACT_NUMBER_MALFORMED — structurally invalid act_number (standalone if,
+        # not in the elif chain, so it can co-fire with ACT_NUMBER_ABROGATION)
+        if act_nr and act_nr not in ("0", ""):
+            malformed, reason = is_malformed_act_number(act_nr)
+            if malformed:
+                sev = Severity.INFO if doc_type in _NO_NUMBER_TYPES else Severity.ERROR
+                issues.append(_issue(
+                    "ACT_NUMBER_MALFORMED", sev, gazette_id, json_path, idx, act_nr, doc_type,
+                    reason,
+                ))
+
         # DOC_TYPE_UNKNOWN
         if doc_type == "UNKNOWN":
             issues.append(_issue(
@@ -248,6 +265,26 @@ def _issue(check, severity, gazette_id, json_path, act_index, act_number, doc_ty
         check=check, severity=severity, gazette_id=gazette_id, json_path=json_path,
         act_index=act_index, act_number=act_number, doc_type=doc_type, message=message,
     )
+
+
+def validate_act_inline(act_obj, gazette_id: str = "unknown") -> list[Issue]:
+    """Validate a single in-memory LegalAct object without going to disk.
+
+    Converts the act to the minimal dict shape expected by _validate_gazette
+    and runs per-act checks.  gazette_id is used for Issue.gazette_id only.
+    Gazette-level checks (SUMAR_ZERO, ACT_COUNT_MISMATCH) are skipped.
+    """
+    act_dict = {
+        "act_index":         getattr(act_obj, "act_index", 0),
+        "act_number":        str(getattr(act_obj, "act_number", "") or ""),
+        "doc_type":          getattr(act_obj, "doc_type", "UNKNOWN"),
+        "issuing_authority": getattr(act_obj, "issuing_authority", ""),
+        "title":             getattr(act_obj, "title", ""),
+        "full_text":         getattr(act_obj, "full_text", ""),
+        "extraction_warnings": list(getattr(act_obj, "extraction_warnings", [])),
+    }
+    gazette_dict = {"gazette_id": gazette_id, "sumar": [], "acts": [act_dict]}
+    return _validate_gazette(gazette_dict, Path(gazette_id))
 
 
 def _find_abrogation_numbers(text: str) -> list[str]:

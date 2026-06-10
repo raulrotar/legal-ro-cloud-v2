@@ -17,7 +17,9 @@ from __future__ import annotations
 # Bump EMBEDDING_VERSION when chunker OR model changes     -> re-embed only.
 SCHEMA_VERSION = "2.0.0"
 PIPELINE_VERSION = "2.0.0"
-EMBEDDING_VERSION = "chunker-2.0+bge-m3-1024"
+# chunker-3.0: Phase-0 pre-embedding cleanup + 512-token article chunks
+# (docs/EMBEDDINGS_PLAN.md)
+EMBEDDING_VERSION = "chunker-3.0+bge-m3-1024"
 
 # ── MongoDB collections ───────────────────────────────────────────────────────
 # Keep the v1 names that the current retrieval code already queries.

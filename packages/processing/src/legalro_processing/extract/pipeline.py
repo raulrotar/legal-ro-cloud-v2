@@ -60,7 +60,7 @@ def run(
     computed (identity, sumar, era) so this function is a drop-in replacement
     for the act-extraction segment of that function.
     """
-    from legalro_processing.extract import md_cache, md_extractor, md_segmenter, llm_structurer, md_rule_extractor
+    from legalro_processing.extract import md_cache, md_extractor, md_segmenter, md_rule_extractor
     from legalro_processing.extract.gazette_schema import GazetteDocument, LegalAct
     from legalro_processing.extract.gazette_extractor import _build_act
     from legalro_processing.extract.segment import RawAct
@@ -83,6 +83,9 @@ def run(
         _log(_gname, "md_cache", "miss — starting Docling")
         try:
             full_md = md_extractor.extract_markdown(str(pdf_path), era, settings)
+            # Normalize diacritics *before* caching so db/md_cache files store
+            # clean Romanian text (not raw mojibake from the broken font CMap).
+            full_md = _normalize_gazette_md(full_md, era)
             md_cache.save(pdf_path, full_md, era.value, md_dir)
             _t = _log(_gname, "md_cache", f"Docling done, {len(full_md):,} chars", _t)
             warnings.append("md_cache: miss — extracted fresh Markdown")
@@ -100,6 +103,63 @@ def run(
     # ── Step 2.5: normalize Markdown before segmentation ─────────────────────
     full_md = _normalize_gazette_md(full_md, era)
     _t = _log(_gname, "normalize", "done", _t)
+
+    # ── Step 2.7: layout triage — extract table-dense regions ────────────────
+    # Table-heavy pages (e.g. AEP party-financing reports) cause the act
+    # segmenter to mint phantom acts from table rows.  Divert them first.
+    # Disable with: extraction.table_triage_enabled: false in config.
+    _triage_enabled = getattr(getattr(settings, "extraction", None), "table_triage_enabled", True)
+    _gazette_tables: list = []
+    if _triage_enabled:
+        from legalro_processing.extract import md_table_extractor as _tbl
+        _gazette_tables, full_md = _tbl.find_table_regions(full_md)
+    if _gazette_tables:
+        _log(_gname, "table_triage",
+             f"{len(_gazette_tables)} table region(s) extracted "
+             f"({sum(t.n_rows for t in _gazette_tables)} rows total)")
+        warnings.append(
+            f"table_triage: {len(_gazette_tables)} table region(s) extracted "
+            f"from markdown before segmentation"
+        )
+
+    # ── Step 2.75 (opt-in): ruled annex tables straight from the PDF ─────────
+    # For table-annex gazettes (heavy triage hit) PyMuPDF find_tables reads
+    # the ruling lines directly and stitches multi-page runs — replaces the
+    # TableFormer-mangled pipe tables.  Enable: extraction.annex_tables_fitz.
+    _annex_fitz = getattr(getattr(settings, "extraction", None), "annex_tables_fitz", False)
+    if _annex_fitz and len(_gazette_tables) >= 20:
+        from legalro_processing.extract.annex_tables import extract_annex_tables
+        try:
+            _fitz_tables = extract_annex_tables(pdf_path)
+            if _fitz_tables and sum(t.n_rows for t in _fitz_tables) >= \
+                    sum(t.n_rows for t in _gazette_tables):
+                warnings.append(
+                    f"annex_tables: replaced {len(_gazette_tables)} markdown table region(s) "
+                    f"with {len(_fitz_tables)} ruled table(s) stitched from the PDF"
+                )
+                _gazette_tables = _fitz_tables
+        except Exception as _exc:
+            warnings.append(f"annex_tables: skipped ({_exc})")
+
+    # ── Step 2.55: recover whole acts Docling dropped from the MD ─────────────
+    # Docling's layout stage can silently discard column content (MO 74/2017:
+    # 30 decrees in the text layer, 23 in the MD).  Closing numbers present in
+    # the PDF text layer but absent from the MD identify candidates; an act is
+    # recovered only when its BODY is also absent (probe check), so closing-only
+    # drops stay with the fitz_enrich step below.  Must run BEFORE fitz_enrich:
+    # injected closing blocks would otherwise mask the missing bodies.
+    from legalro_processing.extract.md_act_recovery import recover_missing_acts
+    try:
+        full_md, _n_recovered, _rec_numbers = recover_missing_acts(full_md, pdf_path, era)
+        if _n_recovered:
+            _t = _log(_gname, "act_recovery", f"{_n_recovered} dropped act(s) recovered", _t)
+            warnings.append(
+                f"md_act_recovery: {_n_recovered} act(s) missing from Docling MD "
+                f"recovered from PDF text layer (nr: {', '.join(_rec_numbers)})"
+            )
+    except Exception as _exc:
+        _log(_gname, "act_recovery", f"SKIPPED: {_exc}")
+        warnings.append(f"md_act_recovery: skipped ({_exc})")
 
     # ── Step 2.6: enrich Markdown with fitz-recovered closing blocks ──────────
     from legalro_processing.extract.secondary_analyzer import FitzAnalyzer, enrich_markdown_with_fitz
@@ -167,7 +227,6 @@ def run(
 
     # ── Step 4: LLM structuring per act ───────────────────────────────────────
     _log(_gname, "llm_loop", f"starting {len(blocks)} acts")
-    _act_max_retries = _act_retry_limit(settings)
     acts: list[LegalAct] = []
     for act_idx, block in enumerate(blocks):
         _t_act = time.time()
@@ -259,44 +318,21 @@ def run(
                     f"sumar[{act_idx}]: {_sumar_nr!r}, sumar_doc_type={_sumar_dt!r})"
                 )
 
-        # Stage 2: LLM verifies and corrects the draft (with per-act retry on bad result)
-        _act_settings = settings
-        meta = full_text = _via = _llm_warnings = None  # type: ignore[assignment]
-        for _attempt in range(1 + _act_max_retries):
-            _log(_gname, f"act[{act_idx}/{len(blocks)-1}]",
-                 f"LLM call attempt {_attempt + 1} (draft nr={rule_draft.act_number!r} type={rule_draft.doc_type})")
-            meta = llm_structurer.structure_act(
-                block,
-                gazette_year=gazette_year,
-                settings=_act_settings,
-                edit_distance_threshold=edit_thr,
-                rule_draft=rule_draft,
-            )
-            full_text = meta.pop("full_text_corrected", None) or block.plain_text
-            _via = meta.pop("_via", "unknown")
-            _llm_warnings = meta.pop("extraction_warnings", [])
-            _llm_warnings.insert(0, f"_via:{_via}")
-
-            _act_nr = str(meta.get("act_number") or "0")
-            _act_dt = str(meta.get("doc_type") or "UNKNOWN")
-            # Skip "missing number" retry for doc types that legitimately have
-            # no own number (COMUNICAT, RECTIFICARE, ANUNT, ANUNȚ).  Still
-            # retry when doc_type itself is UNKNOWN.
-            _no_number_ok = _act_dt in NO_NUMBER_DOC_TYPES
-            _act_is_bad = (_act_nr in ("0", "") and not _no_number_ok) or _act_dt == "UNKNOWN"
-            if not _act_is_bad or _attempt >= _act_max_retries:
-                if _attempt > 0 and not _act_is_bad:
-                    _llm_warnings.append(f"act_number recovered on retry {_attempt + 1}")
-                break
-            _log(_gname, f"act[{act_idx}/{len(blocks)-1}]",
-                 f"bad result (nr={_act_nr!r} type={_act_dt!r}), retrying with fallback model")
-            _act_settings = _make_act_fallback_settings(settings, _attempt)
-
-        meta["_gazette_issue_number"] = issue_number
+        # Stage 2: build meta directly from deterministic rule_draft (no LLM on happy path)
+        meta = {
+            "act_number":        rule_draft.act_number,
+            "act_year":          rule_draft.act_year,
+            "doc_type":          rule_draft.doc_type,
+            "issuing_authority": rule_draft.issuing_authority,
+            "title":             rule_draft.title,
+            "_gazette_issue_number": issue_number,
+        }
+        full_text = block.plain_text
+        _rule_warnings = [f"_via:rule_extractor"] + list(rule_draft.warnings)
 
         _log(_gname, f"act[{act_idx}/{len(blocks)-1}]",
-             f"done nr={meta.get('act_number')!r} via={_via.split('+')[-1]} "
-             f"+{time.time()-_t_act:.1f}s")
+             f"done nr={rule_draft.act_number!r} type={rule_draft.doc_type} via=rule_extractor"
+             f" +{time.time()-_t_act:.1f}s")
 
         # Build LegalAct using the existing _build_act helper
         # (handles article/annex parsing, signatories, etc.)
@@ -307,10 +343,12 @@ def run(
             position_in_gazette=act_idx,
         )
         act = _build_act(act_idx, raw_for_build.text, meta, raw_for_build.page_range, gazette_year)
-        act.extraction_warnings.extend(_llm_warnings)
+        act.extraction_warnings.extend(_rule_warnings)
+        # Keep a reference to the originating block for the repair pass
+        act._repair_block = block  # type: ignore[attr-defined]
         acts.append(act)
 
-    # ── Phantom dedup: drop empty segmentation artefacts that survived LLM ──────
+    # ── Phantom dedup: drop empty segmentation artefacts ────────────────────────
     # A phantom is an act with no identity (number=0/unknown, type=UNKNOWN),
     # no authority, no articles, and a very short body — it is a segmentation
     # fragment, not a real act.  Must run BEFORE Annex propagation so a phantom
@@ -320,6 +358,34 @@ def run(
     if len(acts) < _before_dedup:
         _log(_gname, "phantom_dedup",
              f"dropped {_before_dedup - len(acts)} phantom act(s)")
+
+    # ── Inline validation + vision-LLM repair pass ───────────────────────────
+    # Validate each act in-memory; for acts with fixable ERRORs send the PDF
+    # page images + broken fields to llama3.2-vision:11b to recover correct values.
+    # Only flagged fields are patched; clean fields are never touched.
+    _repair_enabled = getattr(getattr(settings, "repair_llm", None), "enabled", True)
+    if _repair_enabled:
+        from legalro_processing.extract import llm_repair
+        from legalro_processing.extraction_validator import validate_act_inline, needs_reextraction as _needs_repair
+
+        _repaired = 0
+        for act in acts:
+            _issues = validate_act_inline(act, gazette_id=gazette_id)
+            if not _needs_repair(_issues):
+                continue
+
+            _issue_codes = [i.check for i in _issues if i.act_index == act.act_index]
+            _block = getattr(act, "_repair_block", None)
+            _log(_gname, "repair",
+                 f"act[{act.act_index}] nr={act.act_number!r} issues={_issue_codes}")
+            _patched = llm_repair.repair_act(
+                act, _block, pdf_path, _issue_codes, settings,
+            )
+            if _patched:
+                _repaired += 1
+
+        if _repaired:
+            _log(_gname, "repair", f"{_repaired} act(s) patched by vision-LLM repair pass")
 
     # ── Annex propagation (same as regex pipeline) ────────────────────────────
     for i in range(1, len(acts)):
@@ -333,6 +399,35 @@ def run(
             if (not a.act_number or a.act_number == "0") and parent.act_number:
                 a.act_number = parent.act_number
                 a.act_year = parent.act_year
+
+    # ── Duplicate-act dedup: OCR emission loops mint the same act twice ──────
+    from legalro_processing.extract import sumar_reconcile
+    acts, _n_dups = sumar_reconcile.dedup_repeated_acts(acts)
+    if _n_dups:
+        _log(_gname, "dedup", f"dropped {_n_dups} duplicate act(s)")
+        warnings.append(f"dedup: dropped {_n_dups} act(s) duplicating an earlier act "
+                        f"(same number/type/body — OCR loop artifact)")
+
+    # ── Sumar reconciliation: the ToC is the completeness oracle ─────────────
+    # Unmatched sumar entry = missing act (detectable at last); unmatched act
+    # = phantom candidate.  Matched acts with generic titles ("DECRET") get
+    # the real title backfilled from the sumar; acts the sumar can't title
+    # (scanned era) derive one from their own body heading.
+    _rec = sumar_reconcile.reconcile(acts, sumar_entries)
+    _n_nr_fixed = sumar_reconcile.repair_numbers_from_sumar(acts, sumar_entries, _rec)
+    for act in acts:
+        sumar_reconcile.sanitize_title(act)
+    sumar_reconcile.backfill_titles(acts, sumar_entries, _rec)
+    _n_body_titles = sum(1 for act in acts if sumar_reconcile.backfill_title_from_body(act))
+    warnings.extend(_rec.warnings)
+    if _n_nr_fixed:
+        warnings.append(f"sumar_reconcile: {_n_nr_fixed} duplicate act number(s) repaired from sumar")
+    if _rec.warnings or _rec.titles_backfilled or _n_body_titles or _n_nr_fixed:
+        _log(_gname, "sumar_reconcile",
+             f"matched={len(_rec.act_to_sumar)}/{len(sumar_entries)} sumar entries, "
+             f"missing={len(_rec.missing_sumar)}, phantoms={len(_rec.unmatched_acts)}, "
+             f"numbers_repaired={_n_nr_fixed}, "
+             f"titles_backfilled={_rec.titles_backfilled}+{_n_body_titles}from-body")
 
     return GazetteDocument(
         filename=Path(pdf_path).name,
@@ -350,6 +445,7 @@ def run(
         sumar=sumar_entries,
         sumar_raw=sumar_raw,
         acts=acts,
+        tables=_gazette_tables,
         extraction_version="2.0.0-option-c",
         extracted_at=datetime.now(timezone.utc).isoformat(),
         extraction_warnings=warnings,
@@ -475,6 +571,38 @@ def _normalize_gazette_md(md: str, era=None) -> str:
         return m.group(0)
 
     md = _MINISTER_SIG.sub(_annotate_orphaned, md)
+
+    # 6. Promote act headings for scanned_1989 era (flat OCR prose → ## headings).
+    # Gated to SCANNED only; idempotent (skips already-promoted lines).
+    if era is not None:
+        from legalro_core.models import Era as _Era
+        if era == _Era.SCANNED:
+            from legalro_core.normalize import promote_act_headings as _promote
+            md = _promote(md)
+
+    # 7. Word de-fusion for broken_2007 era.
+    # Gated to BROKEN_2007 only (fusion from zero-width inter-word glyphs).
+    # Disabled at any time via LEGALRO_DEFUSE_WORDS=0 env var.
+    # Every split is audit-logged to db/defuse_audit/ for review.
+    if era is not None:
+        from legalro_core.models import Era as _Era
+        from legalro_core.normalize import DEFUSE_WORDS_ENABLED, defuse_words as _defuse
+        if era == _Era.BROKEN_2007 and DEFUSE_WORDS_ENABLED:
+            audit: list[dict] = []
+            md = _defuse(md, audit_log=audit)
+            if audit:
+                import json, pathlib, datetime
+                audit_dir = pathlib.Path("db/defuse_audit")
+                audit_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                audit_path = audit_dir / f"defuse_{ts}.jsonl"
+                with audit_path.open("w", encoding="utf-8") as fh:
+                    for entry in audit:
+                        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                print(
+                    f"[defuse] {len(audit)} token(s) split; audit log → {audit_path}",
+                    file=__import__("sys").stderr, flush=True,
+                )
 
     return md
 

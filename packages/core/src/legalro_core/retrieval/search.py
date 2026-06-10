@@ -166,6 +166,21 @@ def hybrid_search(
                                   year_from=year_from, year_to=year_to, meta=meta)
 
 
+def _to_query_vector(query_embedding):
+    """Quantize the float query vector to BSON int8 binData.
+
+    Stored vectors are int8-quantized at load time (loader._quantize_embedding,
+    Atlas M0 storage); $vectorSearch returns nothing when the query dtype
+    doesn't match, so the query side must mirror the same ×127 scaling."""
+    if not isinstance(query_embedding, list):
+        return query_embedding
+    from bson.binary import Binary, BinaryVectorDtype
+    return Binary.from_vector(
+        [max(-128, min(127, round(v * 127))) for v in query_embedding],
+        BinaryVectorDtype.INT8,
+    )
+
+
 def _python_rrf_search(
     db, query: str, query_embedding: list[float],
     vector_filter: dict, settings: Settings,
@@ -173,6 +188,7 @@ def _python_rrf_search(
     year_to: int | None = None,
     meta: dict | None = None,
 ) -> list[dict]:
+    query_embedding = _to_query_vector(query_embedding)
     vector_pipeline = [
         {
             "$vectorSearch": {
@@ -259,6 +275,7 @@ def _rank_fusion_search(
     db, query: str, query_embedding: list[float],
     vector_filter: dict, settings: Settings
 ) -> list[dict]:
+    query_embedding = _to_query_vector(query_embedding)
     pipeline = [
         {
             "$rankFusion": {
