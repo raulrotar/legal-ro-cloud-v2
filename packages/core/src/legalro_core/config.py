@@ -59,7 +59,7 @@ class LLMConfig(BaseSettings):
     provider: str = "gemini"
     base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
     api_key: str = Field(default="", alias="api_key")
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3.1-flash-lite"
     max_tokens: int = 8192
     temperature: float = 0.0
     agentic_max_tokens: int = 4096
@@ -90,6 +90,9 @@ class ExtractionConfig(BaseSettings):
     annex_tables_fitz: bool = False     # ruled annex tables via PyMuPDF find_tables
                                         # (multi-page stitch; replaces TableFormer
                                         # output on table-annex gazettes)
+    # Sumar-as-numbering-authority for eras with reliable sumars (BROKEN_2007):
+    # "off" | "warn" (log would-be overrides only) | "enforce" (apply)
+    sumar_number_authority: str = "enforce"
 
 
 class RepairLLMConfig(BaseSettings):

@@ -750,13 +750,25 @@ def _build_act(
     seen: set[str] = set()
     signed_by_unique = [s for s in signed_by if not (s in seen or seen.add(s))]  # type: ignore[func-returns-value]
 
-    # act_year from act_number if present
+    # act_year precedence: "/YYYY" suffix on act_number (sumar-sourced) →
+    # parsed signing year from the closing block (meta["act_year"], e.g.
+    # "București, 27 decembrie 2006.") → issue year as last resort.
+    # The [gazette_year-1, gazette_year] band confines the closing-year path
+    # to the Dec-signed/Jan-published population; OCR-garbled years fall
+    # outside it and keep the issue-year default.
     act_number = str(meta.get("act_number", ""))
     act_year: Optional[int] = None
     year_m = re.search(r'/(\d{4})$', act_number)
+    meta_year = meta.get("act_year")
     if year_m:
         act_year = int(year_m.group(1))
         act_number = act_number[: year_m.start()]
+    elif (
+        isinstance(meta_year, int)
+        and gazette_year
+        and gazette_year - 1 <= meta_year <= gazette_year
+    ):
+        act_year = meta_year
     elif gazette_year:
         act_year = gazette_year
 

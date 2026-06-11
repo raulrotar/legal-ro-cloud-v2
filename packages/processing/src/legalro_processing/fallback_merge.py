@@ -117,10 +117,23 @@ def _merge_gazette(primary: dict, fallback: dict, filename: str) -> dict:
     p_acts = primary.get("acts", [])
     f_acts = fallback.get("acts", [])
 
+    # Sumar numbers — the authority for validating fallback number adoption.
+    # The fallback aligns acts POSITIONALLY by index, so its number can belong
+    # to a neighbouring act when the two pipelines segmented differently;
+    # adopting it unchecked plants chimeras after all in-pipeline safeguards.
+    # Scanned era excluded: its OCR sumar is partial, so absence from it is
+    # not evidence — an empty set disables the guard below.
+    sumar_nrs: set[str] = set()
+    if merged.get("era") != "scanned":
+        sumar_nrs = {
+            re.sub(r"\D", "", str(e.get("act_number") or "").split("/")[0])
+            for e in merged.get("sumar", [])
+        } - {""}
+
     merged_acts = []
     for i, p_act in enumerate(p_acts):
         f_act = f_acts[i] if i < len(f_acts) else None
-        merged_acts.append(_merge_act(p_act, f_act, i))
+        merged_acts.append(_merge_act(p_act, f_act, i, sumar_nrs))
 
     # Append extra acts from fallback that primary missed entirely.
     # Skip extras whose act number the primary already has — those are the
@@ -160,7 +173,8 @@ def _merge_gazette(primary: dict, fallback: dict, filename: str) -> dict:
     return merged
 
 
-def _merge_act(primary: dict, fallback: dict | None, idx: int) -> dict:
+def _merge_act(primary: dict, fallback: dict | None, idx: int,
+               sumar_nrs: set[str] | None = None) -> dict:
     """Merge one act dict, preferring the better value per field."""
     if fallback is None:
         return primary
@@ -168,15 +182,26 @@ def _merge_act(primary: dict, fallback: dict | None, idx: int) -> dict:
     result = dict(primary)
     changes = []
 
-    # act_number
+    # act_number — adopt the fallback's positional number only when the
+    # gazette's sumar confirms it exists (or no sumar is available to check);
+    # an unconfirmed number is recorded as a warning instead of adopted.
     p_nr = primary.get("act_number", "0") or "0"
     f_nr = fallback.get("act_number", "0") or "0"
     if _is_bad_number(p_nr) and not _is_bad_number(f_nr):
-        result["act_number"] = f_nr
-        # Sync act_year from fallback when we take its number
-        if fallback.get("act_year"):
-            result["act_year"] = fallback["act_year"]
-        changes.append(f"act_number: {p_nr!r}→{f_nr!r}")
+        f_key = re.sub(r"\D", "", str(f_nr).split("/")[0])
+        if not sumar_nrs or f_key in sumar_nrs:
+            result["act_number"] = f_nr
+            # Sync act_year from fallback when we take its number
+            if fallback.get("act_year"):
+                result["act_year"] = fallback["act_year"]
+            changes.append(f"act_number: {p_nr!r}→{f_nr!r}")
+        else:
+            warns = list(result.get("extraction_warnings", []))
+            warns.append(
+                f"[MERGE] fallback act_number {f_nr!r} NOT adopted — "
+                f"absent from sumar (positional misalignment guard)"
+            )
+            result["extraction_warnings"] = warns
 
     # doc_type
     p_dt = primary.get("doc_type", "UNKNOWN")

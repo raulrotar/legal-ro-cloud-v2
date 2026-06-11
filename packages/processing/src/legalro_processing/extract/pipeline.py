@@ -400,8 +400,27 @@ def run(
                 a.act_number = parent.act_number
                 a.act_year = parent.act_year
 
-    # ── Duplicate-act dedup: OCR emission loops mint the same act twice ──────
+    # ── Sumar number authority (BROKEN_2007): displaced closing blocks make
+    # closing-derived numbers land on neighbouring acts; the sumar's numbers,
+    # years, and near-verbatim titles are the reliable join key. Runs BEFORE
+    # dedup so corrected numbers let same-number dedup absorb recovery
+    # duplicates, and before reconcile so titles/years backfill correctly.
     from legalro_processing.extract import sumar_reconcile
+    from legalro_core.models import Era as _Era
+    _anchor_mode = getattr(getattr(settings, "extraction", None),
+                           "sumar_number_authority", "enforce")
+    _n_anchor = sumar_reconcile.anchor_numbers_to_sumar(
+        acts, sumar_entries, era, mode=_anchor_mode)
+    if _n_anchor:
+        _log(_gname, "sumar_anchor",
+             f"{_n_anchor} act number(s) corrected via sumar title-anchor (mode={_anchor_mode})")
+        warnings.append(f"sumar_anchor: {_n_anchor} act number(s) overridden by sumar "
+                        f"title-anchor (closing blocks displaced by layout engine)")
+        if _n_anchor >= 4:
+            warnings.append("sumar_anchor: high override count — candidate for "
+                            "text-layer re-segmentation")
+
+    # ── Duplicate-act dedup: OCR emission loops mint the same act twice ──────
     acts, _n_dups = sumar_reconcile.dedup_repeated_acts(acts)
     if _n_dups:
         _log(_gname, "dedup", f"dropped {_n_dups} duplicate act(s)")
@@ -413,8 +432,29 @@ def run(
     # = phantom candidate.  Matched acts with generic titles ("DECRET") get
     # the real title backfilled from the sumar; acts the sumar can't title
     # (scanned era) derive one from their own body heading.
-    _rec = sumar_reconcile.reconcile(acts, sumar_entries)
+    _rec = sumar_reconcile.reconcile(acts, sumar_entries,
+                                     legacy_junk_filter=(era == _Era.SCANNED))
     _n_nr_fixed = sumar_reconcile.repair_numbers_from_sumar(acts, sumar_entries, _rec)
+
+    # ── Misnumbered-shadow drop: a sumar-unmatched act whose body lives inside
+    # a matched act is the wrongly-numbered duplicate of that act (recovery
+    # adds clean copies without deleting the originals when number/type differ).
+    # NOT for the scanned era: its OCR sumar is partial, so "sumar-unmatched"
+    # there includes real acts, and template-twin OCR bodies contain each
+    # other's tails — dropping reshuffles the positional reconciliation.
+    _shadow_msgs: list[str] = []
+    if era != _Era.SCANNED:
+        acts, _shadow_msgs = sumar_reconcile.drop_contained_unmatched(acts, _rec)
+    if _shadow_msgs:
+        _log(_gname, "shadow_drop", f"dropped {len(_shadow_msgs)} misnumbered shadow act(s)")
+        warnings.extend(f"shadow_drop: {m}" for m in _shadow_msgs)
+        # re-reconcile: positional passes may have mis-paired against shadows
+        _rec = sumar_reconcile.reconcile(acts, sumar_entries,
+                                     legacy_junk_filter=(era == _Era.SCANNED))
+
+    # ── act_year from the sumar's N/YYYY for matched, number-agreeing acts ───
+    _n_years = sumar_reconcile.backfill_years_from_sumar(acts, sumar_entries, _rec)
+
     for act in acts:
         sumar_reconcile.sanitize_title(act)
     sumar_reconcile.backfill_titles(acts, sumar_entries, _rec)
@@ -422,11 +462,13 @@ def run(
     warnings.extend(_rec.warnings)
     if _n_nr_fixed:
         warnings.append(f"sumar_reconcile: {_n_nr_fixed} duplicate act number(s) repaired from sumar")
-    if _rec.warnings or _rec.titles_backfilled or _n_body_titles or _n_nr_fixed:
+    if _n_years:
+        warnings.append(f"sumar_reconcile: {_n_years} act_year(s) corrected from sumar")
+    if _rec.warnings or _rec.titles_backfilled or _n_body_titles or _n_nr_fixed or _n_years:
         _log(_gname, "sumar_reconcile",
              f"matched={len(_rec.act_to_sumar)}/{len(sumar_entries)} sumar entries, "
              f"missing={len(_rec.missing_sumar)}, phantoms={len(_rec.unmatched_acts)}, "
-             f"numbers_repaired={_n_nr_fixed}, "
+             f"numbers_repaired={_n_nr_fixed}, years_fixed={_n_years}, "
              f"titles_backfilled={_rec.titles_backfilled}+{_n_body_titles}from-body")
 
     return GazetteDocument(

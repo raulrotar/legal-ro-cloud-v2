@@ -43,14 +43,25 @@ def _norm_nr(nr: str | None) -> str:
     return nr.lstrip("0") or ("0" if nr else "")
 
 
+# Masthead line minted as a sumar entry/title by the parser:
+# "Anul 175 (XIX) — Nr. 2" — never a real act title.
+_MASTHEAD_TITLE = re.compile(r"^\s*Anul\s+[IVXLCDM\d]+\s*\(", re.IGNORECASE)
+
+
 def is_generic_title(title: str | None) -> bool:
-    return _fold(title or "") in _GENERIC_TITLES
+    t = title or ""
+    return _fold(t) in _GENERIC_TITLES or bool(_MASTHEAD_TITLE.match(t))
 
 
 _JUNK_SUMAR_TITLE = re.compile(
     r"^\s*(Luni|Mar[țt]i|Miercuri|Joi|Vineri|S[âa]mb[ăa]t[ăa]|Duminic[ăa])\b[,\s]",
     re.IGNORECASE,
 )
+
+
+def _is_junk_entry(entry) -> bool:
+    title = str(getattr(entry, "title", "") or "")
+    return bool(_JUNK_SUMAR_TITLE.match(title) or _MASTHEAD_TITLE.match(title))
 
 
 @dataclass
@@ -62,7 +73,8 @@ class ReconcileReport:
     warnings: list[str] = field(default_factory=list)
 
 
-def reconcile(acts: list, sumar_entries: list) -> ReconcileReport:
+def reconcile(acts: list, sumar_entries: list,
+              legacy_junk_filter: bool = False) -> ReconcileReport:
     """Match extracted acts to sumar entries and report discrepancies.
 
     Matching passes (an act/entry is consumed by the first pass that claims it):
@@ -70,15 +82,31 @@ def reconcile(acts: list, sumar_entries: list) -> ReconcileReport:
       2. number-only — unique pairs only
       3. positional alignment of the remaining unmatched, in document order,
          accepted only when doc_type is compatible (equal or one side unknown)
+
+    legacy_junk_filter: the SCANNED-era compatibility mode. Historically junk
+    entries (weekday lines) were dropped by REBINDING the list, which shifted
+    the sj indices that backfill_titles/repair_numbers later use against the
+    caller's original list — effectively randomizing those reads. The 1989
+    extraction baseline was validated WITH that behavior (it suppresses
+    unreliable OCR sumar-title backfill), so the scanned era keeps it until
+    the scanned-era sumar work lands. All other eras get correct indices.
     """
     report = ReconcileReport()
-    # drop junk entries the sumar parser sometimes mints (weekday/date lines)
-    sumar_entries = [
-        e for e in sumar_entries
-        if not _JUNK_SUMAR_TITLE.match(str(getattr(e, "title", "") or ""))
-    ]
     if not sumar_entries or not acts:
         return report
+    if legacy_junk_filter:
+        sumar_entries = [
+            e for e in sumar_entries
+            if not _JUNK_SUMAR_TITLE.match(str(getattr(e, "title", "") or ""))
+        ]
+        if not sumar_entries:
+            return report
+        junk_s: set[int] = set()
+    else:
+        # Junk entries (weekday/date lines, masthead) are excluded from
+        # matching by pre-claiming their slots — NOT by filtering the list,
+        # which would shift the sj indices used downstream.
+        junk_s = {sj for sj, e in enumerate(sumar_entries) if _is_junk_entry(e)}
 
     def _type_key(obj) -> str:
         t = _fold(getattr(obj, "doc_type", ""))
@@ -95,7 +123,7 @@ def reconcile(acts: list, sumar_entries: list) -> ReconcileReport:
         for a in acts
     ]
 
-    matched_s: set[int] = set()
+    matched_s: set[int] = set(junk_s)  # junk slots can never be claimed
     matched_a: set[int] = set()
 
     def _claim(ai: int, sj: int) -> None:
@@ -346,3 +374,234 @@ def backfill_titles(acts: list, sumar_entries: list, report: ReconcileReport) ->
                     f"title backfilled from sumar[{sj}] (was generic)"
                 )
             report.titles_backfilled += 1
+
+
+# ── Sumar number authority (era-gated) ───────────────────────────────────────
+# Eras whose sumar is reliable enough to OVERRIDE closing-block numbers.
+# BROKEN_2007: Docling displaces/drops closing blocks on two-column pages, so
+# the closing-derived number can belong to the neighbouring act, while the
+# sumar carries correct numbers, /YYYY years, and near-verbatim act titles.
+SUMAR_AUTHORITY_ERAS = {"broken_2007"}
+
+# Decisive title-containment score, and the margin under which two candidate
+# entries are considered ambiguous (template twins).
+_ANCHOR_SCORE_MIN = 0.65
+_ANCHOR_MARGIN = 0.20
+
+
+def _title_tokens(text: str) -> list[str]:
+    """Diacritic-folded lowercase word tokens (len ≥ 3) for title matching."""
+    text = unicodedata.normalize("NFKD", text or "")
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    return [w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) >= 3]
+
+
+def _body_heading_tokens(act) -> list[str]:
+    """Tokens of the act's own title line as printed in its body.
+
+    Gazette bodies open with the type heading then a "privind…/pentru…" title
+    line — the same line the sumar reproduces. Returns [] when no usable
+    heading is found (e.g. table-only annex acts)."""
+    lines = [l.strip() for l in (getattr(act, "full_text", "") or "").splitlines() if l.strip()]
+    for idx, line in enumerate(lines[:8]):
+        if not _TITLE_START.match(line):
+            continue
+        title = _BODY_INLINE.sub("", line).strip()
+        for nxt in lines[idx + 1: idx + 3]:
+            if _BODY_START.match(nxt) or len(title) > 200:
+                break
+            cut = _BODY_INLINE.sub("", nxt).strip()
+            title += " " + cut
+            if cut != nxt.strip():
+                break
+        toks = _title_tokens(title)
+        if len(toks) >= 3:
+            return toks[:25]
+    return []
+
+
+def _containment(body_toks: list[str], entry_toks: set[str]) -> float:
+    """Fraction of the body-heading tokens present in the sumar title.
+
+    The sumar title is a superset of the body heading in this era, so
+    containment is the right direction (Jaccard would punish the sumar's
+    extra type-word prefix)."""
+    if not body_toks:
+        return 0.0
+    return sum(1 for t in body_toks if t in entry_toks) / len(body_toks)
+
+
+def split_nr_year(raw: str | None) -> tuple[str, int | None]:
+    """'1.441/2006' → ('1441', 2006); '226' → ('226', None)."""
+    s = str(raw or "")
+    m = re.search(r"/((?:1[89]|20)\d{2})\s*$", s)
+    year = int(m.group(1)) if m else None
+    return _norm_nr(s), year
+
+
+def anchor_numbers_to_sumar(acts: list, sumar_entries: list, era, mode: str = "enforce") -> int:
+    """Era-scoped: override closing-derived act numbers with the sumar number
+    whose TITLE matches the act's own body heading.
+
+    Safety properties:
+      * era-gated to SUMAR_AUTHORITY_ERAS — structural no-op elsewhere;
+      * absent/degenerate sumar (fewer than 2 usable entries) → no-op;
+      * double-evidence rule: an override requires BOTH a decisive title match
+        on the new entry AND a title MISmatch on the entry carrying the act's
+        current number — a correct closing number can never be overridden;
+      * template twins (titles within _ANCHOR_MARGIN of each other) fall back
+        to monotone first-unclaimed assignment, the same positional semantics
+        the pipeline already uses — no behaviour change for twins.
+
+    mode: "off" → no-op; "warn" → log would-be overrides without mutating;
+    "enforce" → apply. Returns the number of (would-be) overrides — callers
+    can use a high count as a re-segmentation quality signal.
+    """
+    if mode == "off":
+        return 0
+    era_val = getattr(era, "value", era)
+    if era_val not in SUMAR_AUTHORITY_ERAS:
+        return 0
+
+    usable: list[tuple[int, object, set[str], str, int | None]] = []
+    for sj, e in enumerate(sumar_entries):
+        title = str(getattr(e, "title", "") or "")
+        s_nr, s_year = split_nr_year(getattr(e, "act_number", ""))
+        if not s_nr or s_nr == "0" or _is_junk_entry(e) or is_generic_title(title):
+            continue
+        usable.append((sj, e, set(_title_tokens(title)), s_nr, s_year))
+    if len(usable) < 2:
+        return 0
+
+    by_nr = {u[3]: u for u in usable}
+    claimed: set[int] = set()
+    overrides = 0
+    for act in acts:
+        body_toks = _body_heading_tokens(act)
+        if not body_toks:
+            continue
+        scored = sorted(
+            ((_containment(body_toks, toks), sj) for sj, _e, toks, _nr, _yr in usable
+             if sj not in claimed),
+            key=lambda x: (-x[0], x[1]),
+        )
+        if not scored or scored[0][0] < _ANCHOR_SCORE_MIN:
+            continue
+        top_score = scored[0][0]
+        within = [sj for s, sj in scored if top_score - s < _ANCHOR_MARGIN]
+        if len(within) > 1:
+            # ambiguous (template twins) → monotone: first unclaimed in sumar order
+            sj = min(within)
+        else:
+            sj = scored[0][1]
+        entry = next(u for u in usable if u[0] == sj)
+        _sj, _e, _toks, s_nr, s_year = entry
+        a_nr = _norm_nr(getattr(act, "act_number", ""))
+
+        if a_nr != s_nr:
+            # double-evidence: keep the closing number when its OWN sumar
+            # entry title-matches this body (i.e. the closing agrees)
+            own = by_nr.get(a_nr)
+            if own is not None and _containment(body_toks, own[2]) >= _ANCHOR_SCORE_MIN:
+                continue  # entry NOT claimed — it belongs to another act
+            claimed.add(sj)
+            overrides += 1
+            if mode == "warn":
+                if hasattr(act, "extraction_warnings"):
+                    act.extraction_warnings.append(
+                        f"sumar title-anchor WOULD override act_number "
+                        f"{act.act_number!r}→{s_nr!r} (warn mode)"
+                    )
+                continue
+            prev = act.act_number
+            act.act_number = s_nr
+            if s_year is not None and hasattr(act, "act_year"):
+                act.act_year = s_year
+            if hasattr(act, "extraction_warnings"):
+                act.extraction_warnings.append(
+                    f"act_number overridden by sumar title-anchor "
+                    f"({prev!r}→{s_nr!r}; closing block displaced by layout engine)"
+                )
+        else:
+            claimed.add(sj)
+            if mode == "enforce" and s_year is not None and hasattr(act, "act_year") \
+                    and getattr(act, "act_year", None) != s_year:
+                act.act_year = s_year
+                if hasattr(act, "extraction_warnings"):
+                    act.extraction_warnings.append(
+                        f"act_year corrected from sumar title-anchor (→{s_year})"
+                    )
+    return overrides
+
+
+def backfill_years_from_sumar(acts: list, sumar_entries: list, report: ReconcileReport) -> int:
+    """Set act_year from the matched sumar entry's 'N/YYYY' form.
+
+    Covers acts whose closing block was dropped entirely (no signing year to
+    parse). Only fires when the numbers agree — a positional match with a
+    different number is not year evidence. Scanned-era sumar entries carry no
+    years → structural no-op there. Returns the number of corrections."""
+    by_index = {getattr(a, "act_index", i): a for i, a in enumerate(acts)}
+    fixed = 0
+    for act_idx, sj in report.act_to_sumar.items():
+        act = by_index.get(act_idx)
+        if act is None or not hasattr(act, "act_year"):
+            continue
+        s_nr, s_year = split_nr_year(getattr(sumar_entries[sj], "act_number", ""))
+        if s_year is None or s_nr != _norm_nr(getattr(act, "act_number", "")):
+            continue
+        if getattr(act, "act_year", None) != s_year:
+            act.act_year = s_year
+            if hasattr(act, "extraction_warnings"):
+                act.extraction_warnings.append(
+                    f"act_year corrected from sumar (→{s_year})"
+                )
+            fixed += 1
+    return fixed
+
+
+# Shared with md_act_recovery's act-unique-tail concept: the longest segment
+# between boilerplate markers holds the act-unique content (appointee names…).
+_BOILERPLATE_SPLIT = re.compile(
+    r"PRE[ȘS]EDINTELE\s+ROM[ÂA]NIEI|Bucure[șs]ti,\s*\d{1,2}\s+\w+\s+\d{4}"
+)
+
+
+def act_unique_tail(full_text: str) -> str:
+    """Folded ~120-char tail of the act's body (its act-unique content)."""
+    parts = _BOILERPLATE_SPLIT.split(full_text or "")
+    if not parts:
+        return ""
+    return _fold(max(parts, key=len))[-120:]
+
+
+def drop_contained_unmatched(acts: list, report: ReconcileReport,
+                             mode: str = "enforce") -> tuple[list, list[str]]:
+    """Drop sumar-unmatched acts whose act-unique tail is contained in a
+    sumar-MATCHED act's body — they are misnumbered shadows of that act
+    (e.g. a recovery duplicate under a wrong number/doc_type, which
+    dedup_repeated_acts cannot catch because it requires equal number+type).
+
+    A sumar-matched act is never dropped. Returns (kept_acts, descriptions)."""
+    matched_idx = set(report.act_to_sumar)
+    matched_folds = [
+        (i, _fold(getattr(a, "full_text", ""))) for i, a in enumerate(acts)
+        if getattr(a, "act_index", i) in matched_idx
+    ]
+    kept, dropped = [], []
+    for i, act in enumerate(acts):
+        if getattr(act, "act_index", i) in matched_idx:
+            kept.append(act)
+            continue
+        tail = act_unique_tail(getattr(act, "full_text", ""))
+        if len(tail) >= 60 and any(tail in f for j, f in matched_folds if j != i):
+            desc = (f"act[{getattr(act, 'act_index', i)}] "
+                    f"{getattr(act, 'doc_type', '?')} nr={getattr(act, 'act_number', '?')!r} "
+                    f"dropped: sumar-unmatched, body contained in a matched act "
+                    f"(misnumbered shadow)")
+            dropped.append(desc)
+            if mode == "warn":
+                kept.append(act)
+            continue
+        kept.append(act)
+    return kept, dropped

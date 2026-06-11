@@ -1,5 +1,6 @@
 """Hybrid search: vector + BM25 + RRF fusion."""
 import re
+from legalro_core.act_number import fold_act_number
 from legalro_core.config import Settings
 from legalro_core.embeddings import embed_texts
 from legalro_core.store import get_db
@@ -40,19 +41,24 @@ _ACT_NR_BARE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Signing-vs-publication year skew: an act signed in December is published in
+# a January issue and may be stored under either year, and users legitimately
+# cite either one ("Decizia nr. 226/2006" sits in a 2007 MO issue).
+_ACT_YEAR_TOLERANCE = 1
+
 
 def _parse_query_metadata(query: str) -> dict:
     """Extract act number, year, and MO number hints from a natural-language query."""
     meta = {}
     m = _ACT_NR_RE.search(query)
     if m:
-        meta["act_number"] = m.group(1).replace(".", "")
+        meta["act_number"] = fold_act_number(m.group(1))
         meta["act_year"] = int(m.group(2))
     if not meta.get("act_number"):
         # Try bare form: "Decizia 922 2007" (no slash)
         m = _ACT_NR_BARE_RE.search(query)
         if m:
-            meta["act_number"] = m.group(1).replace(".", "")
+            meta["act_number"] = fold_act_number(m.group(1))
             meta["act_year"] = int(m.group(2))
     m = _MO_NR_RE.search(query)
     if m:
@@ -69,11 +75,13 @@ def _compute_boost(doc: dict, meta: dict, query: str = "") -> float:
     Centralised so both the $rankFusion path (_apply_metadata_boost) and the
     Python-RRF path (_rrf_merge inline loop) use identical logic.
 
-    Act-number boost rules (year-gated):
-    - Only boost when the chunk's own act_number matches the queried number AND
-      (no year was parsed from the query OR the chunk's act_year matches it).
-      This prevents the boost from reinforcing an act that merely happens to carry
-      the same number in a different year.
+    Act-number boost rules (year-gated, numbers folded on both sides):
+    - Only boost when the chunk's folded act_number matches the queried number
+      AND the years agree within ±1 (or either side has no year). The ±1
+      tolerance covers signing-vs-publication skew; |Δyear| ≥ 2 stays gated so
+      annually-recycled numbers in distant years are never reinforced.
+    - Exact-year agreement earns an extra half-boost (tie-break in favour of
+      the exact-cited copy when an act is stored under both years).
     - Additionally, if the query contains title-level keywords (content words
       beyond digits/prepositions) that also appear in the chunk title, apply a
       small extra boost. This disambiguates same-number/same-year acts whose
@@ -85,10 +93,25 @@ def _compute_boost(doc: dict, meta: dict, query: str = "") -> float:
     mo_num = meta.get("mo_number")
     mo_year = meta.get("mo_year")
 
-    if act_num and str(doc.get("act_number", "")) == act_num:
-        # Year-gate: only boost when year matches or query has no year
-        if not act_year or doc.get("act_year") == act_year:
+    if act_num:
+        doc_num = fold_act_number(doc.get("act_number", ""))
+        # split("/")[0] lets query "999" match stored compound "999/726"
+        num_match = doc_num and (doc_num == act_num or doc_num.split("/")[0] == act_num)
+        doc_year = doc.get("act_year")
+        # Year-gate with ±1 tolerance: signing-vs-publication skew means the
+        # stored year and the user-cited year legitimately differ by one for
+        # Dec-signed/Jan-published acts. |Δyear| ≥ 2 stays gated — that is the
+        # annually-recycled-number case the gate was added for.
+        year_ok = (
+            not act_year or not isinstance(doc_year, int)
+            or abs(doc_year - act_year) <= _ACT_YEAR_TOLERANCE
+        )
+        if num_match and year_ok:
             boost += _METADATA_BOOST
+            if act_year and doc_year == act_year:
+                # exact-year agreement bonus (replaces the old standalone
+                # act_year half-boost, which rewarded same-year noise chunks)
+                boost += _METADATA_BOOST * 0.5
             # Title-keyword agreement: extract content words from the query
             # (min 4 chars, not pure digits) and check overlap with chunk title.
             if query:
@@ -99,9 +122,6 @@ def _compute_boost(doc: dict, meta: dict, query: str = "") -> float:
                 }
                 if qwords and any(w in chunk_title for w in qwords):
                     boost += _TITLE_KEYWORD_BOOST
-
-    if act_year and doc.get("act_year") == act_year:
-        boost += _METADATA_BOOST * 0.5
 
     if mo_num:
         issue = doc.get("source_issue_id", "")

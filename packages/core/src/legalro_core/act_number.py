@@ -37,6 +37,24 @@ _PLAIN_INT = re.compile(r"^\d{1,3}(\.\d{3})*$")
 # Matches (plain_int)/YEAR where YEAR is a 4-digit plausible calendar year
 _WITH_YEAR = re.compile(r"^(\d{1,3}(\.\d{3})*)/(\d{4})$")
 
+# Trailing /YEAR suffix (plausible calendar years only — keeps compound
+# numbers like "999/726" intact, where the right side is a second act number)
+_TRAILING_YEAR = re.compile(r"/((?:1[89]|20)\d{2})$")
+
+
+def fold_act_number(raw: object) -> str:
+    """Canonical comparison form for act numbers.
+
+    "1.439" -> "1439"; "1.642/2016" -> "1642"; "999/726" -> "999/726";
+    "0"/""/None -> "".  Stored act numbers mix Romanian thousands-dotted and
+    plain forms for the same act, so any equality check must fold both sides.
+    """
+    s = str(raw or "").strip()
+    if not s or s == "0":
+        return ""
+    s = _TRAILING_YEAR.sub("", s)
+    return s.replace(".", "")
+
 
 def is_malformed_act_number(raw: str) -> tuple[bool, str]:
     """Return (is_malformed, reason).

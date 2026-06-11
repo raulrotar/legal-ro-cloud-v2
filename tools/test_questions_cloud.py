@@ -124,9 +124,13 @@ QUESTIONS = [
 def _score(answer: str, expected: str) -> str:
     def fold(s: str) -> str:
         s = unicodedata.normalize("NFD", s.lower())
-        return "".join(c for c in s if unicodedata.category(c) != "Mn")
+        s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+        # Romanian thousands separator: "1.448" -> "1448" so number tokens
+        # match regardless of formatting (dates like "3.XII.2007" untouched).
+        return re.sub(r"(?<=\d)\.(?=\d)", "", s)
 
-    tokens = re.findall(r"[\w]+", expected)
+    # fold BEFORE tokenizing, otherwise "1.448" splits into "1"/"448"
+    tokens = re.findall(r"[\w]+", fold(expected))
     tokens = [t for t in tokens if len(t) >= 3]
     if not tokens:
         return "NECUNOSCUT"

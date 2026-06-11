@@ -175,5 +175,9 @@ tratează același subiect sau aceeași instituție.
 9. Când documentul conține o listă numerotată, citește toate elementele listei și identifică \
 elementul relevant înainte de a răspunde. Nu te opri la primul element găsit dacă întrebarea \
 vizează un element specific.
+10. Când răspunsul citează un alt act normativ (de ex. actul înființat, modificat sau abrogat), \
+preia din documentul-sursă și referința lui de publicare în Monitorul Oficial, dacă aceasta \
+apare în context (ex: „publicată în Monitorul Oficial nr. 120 din 13 mai 1994"). Nu o inventa \
+dacă lipsește.
 
 Format citare: [LEGE nr. 123/2024, Art. 5 alin. (2)]"""
