@@ -38,7 +38,7 @@ def act_summary(act, settings) -> str:
     # candidate models: configured one first unless it's a vision model
     # (mllama no longer loads in current Ollama), then known-good text models
     cfg_model = getattr(settings.llm, "model", "") or ""
-    candidates = [m for m in (cfg_model, "qwen3.5:9b", "llama3.1:8b")
+    candidates = [m for m in (cfg_model, "gemma4:12b-nvfp4", "qwen3.5:9b")
                   if m and "vision" not in m]
     summary = ""
     import ollama
@@ -50,6 +50,7 @@ def act_summary(act, settings) -> str:
                 messages=[{"role": "user",
                            "content": _PROMPT.format(title=title, text=text)}],
                 options={"temperature": 0, "num_predict": 300},
+                think=False,  # gemma4/qwen3.5 are thinking models; without this content is empty
             )
             summary = (resp.message.content or "").strip()
             if summary:
@@ -61,7 +62,7 @@ def act_summary(act, settings) -> str:
 
     # sanity: strip chain-of-thought tags, newlines, hard length cap
     summary = re.sub(r"(?s)<think>.*?</think>", "", summary)
-    summary = re.sub(r"\s+", " ", summary).strip()[:300]
+    summary = re.sub(r"\s+", " ", summary).strip()[:500]
     if len(summary.split()) < 4:
         return ""
     SAC_CACHE_DIR.mkdir(parents=True, exist_ok=True)
