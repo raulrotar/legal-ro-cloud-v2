@@ -84,12 +84,65 @@ def run_fallback_merge(
 
     merged = _merge_gazette(primary_data, fallback_data, pdf_path.name)
 
+    # Reconciliation ran before this merge phase, so acts appended here can
+    # resolve MISSING-sumar warnings retroactively (e.g. a closing-block
+    # split act recovered by the regex pipeline).
+    for note in _resolve_missing_after_merge(merged):
+        _log(f"[fallback] {pdf_path.name} — {note}")
+
     json_path.write_text(
         json.dumps(merged, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     _log(f"[fallback] {pdf_path.name} — merge written to {json_path}")
     return json_path
+
+
+_MISSING_WARNING = re.compile(
+    r"sumar_reconcile: MISSING act — sumar\[(\d+)\] "
+    r"(\S+) nr='([^']*)' p\.(\S+) '(.*)' has no matching"
+)
+
+
+def _resolve_missing_after_merge(merged: dict) -> list[str]:
+    """Resolve MISSING-sumar warnings satisfied by acts the merge appended.
+
+    Matches by folded act number (wildcard-tolerant on doc_type), prefers the
+    longest body among duplicates, and backfills doc_type/title from the sumar
+    entry recorded in the warning text.
+    """
+    from legalro_core.act_number import fold_act_number
+
+    warnings = merged.get("extraction_warnings") or []
+    kept: list[str] = []
+    notes: list[str] = []
+    for w in warnings:
+        m = _MISSING_WARNING.search(w)
+        if not m:
+            kept.append(w)
+            continue
+        sj, stype, snr, _page, stitle = m.groups()
+        folded = fold_act_number(snr)
+        cands = [
+            a for a in merged.get("acts", [])
+            if folded and fold_act_number(a.get("act_number")) == folded
+            and (a.get("doc_type") in ("UNKNOWN", "", None) or a.get("doc_type") == stype)
+        ]
+        if not cands:
+            kept.append(w)
+            continue
+        best = max(cands, key=lambda a: len(a.get("full_text") or ""))
+        if best.get("doc_type") in ("UNKNOWN", "", None) and stype not in ("?", "ACT", ""):
+            best["doc_type"] = stype
+        if not best.get("title"):
+            best["title"] = stitle
+        notes.append(
+            f"fallback_merge: resolved MISSING sumar[{sj}] {stype} nr={snr!r} "
+            f"→ merged act nr={best.get('act_number')!r}"
+        )
+    if notes:
+        merged["extraction_warnings"] = kept + notes
+    return notes
 
 
 def find_source_pdf(json_path: Path, laws_dir: Path) -> Path | None:

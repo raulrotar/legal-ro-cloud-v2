@@ -74,7 +74,8 @@ class ReconcileReport:
 
 
 def reconcile(acts: list, sumar_entries: list,
-              legacy_junk_filter: bool = False) -> ReconcileReport:
+              legacy_junk_filter: bool = False,
+              tables: list | None = None) -> ReconcileReport:
     """Match extracted acts to sumar entries and report discrepancies.
 
     Matching passes (an act/entry is consumed by the first pass that claims it):
@@ -157,7 +158,23 @@ def reconcile(acts: list, sumar_entries: list,
         if len(a_hits) == 1 and len(s_hits) == 1:
             _claim(a_hits[0], s_hits[0])
 
-    # pass 3: positional alignment of leftovers with compatible doc_type
+    # pass 3a: number match among leftovers, wildcard-tolerant on type.
+    # Duplicate numbers happen when a closing-block fragment inherits the
+    # number of the act it was split from — prefer the longest body.
+    for sj in [sj for sj in range(len(sumar_entries)) if sj not in matched_s]:
+        st, sn = s_keys[sj]
+        if not sn:
+            continue
+        cands = [
+            ai for ai in range(len(acts))
+            if ai not in matched_a and a_keys[ai][1] == sn
+            and (not a_keys[ai][0] or not st or a_keys[ai][0] == st)
+        ]
+        if cands:
+            best = max(cands, key=lambda ai: len(getattr(acts[ai], "full_text", "") or ""))
+            _claim(best, sj)
+
+    # pass 3b: positional alignment of remaining leftovers with compatible doc_type
     rest_a = [ai for ai in range(len(acts)) if ai not in matched_a]
     rest_s = [sj for sj in range(len(sumar_entries)) if sj not in matched_s]
     for ai, sj in zip(rest_a, rest_s):
@@ -172,6 +189,41 @@ def reconcile(acts: list, sumar_entries: list,
 
     for sj in report.missing_sumar:
         e = sumar_entries[sj]
+        # Party-financing filings (Legea 334/2006) are number-less sumar
+        # entries whose "act" is a table-only document diverted by the table
+        # triage — no act will ever match. When a table sits on the entry's
+        # page, report INFO instead of MISSING.
+        _nr = str(getattr(e, "act_number", "") or "")
+        _title = str(getattr(e, "title", "") or "")
+        _page = getattr(e, "page_start", None)
+        _cat = str(getattr(e, "category", "") or "")
+        if (not _nr or _nr == "0") and tables and re.match(
+                r'\s*(?:Partidul|Alian[țt]a|Uniunea|Asocia[țt]ia|Forumul)\b',
+                _title, re.IGNORECASE):
+            # Anchor on the entry's page when tables carry real page guesses,
+            # else on the party-financing section header (often a wrapped
+            # fragment, so match any of its parts)
+            _page_hit = _page and any(
+                abs(int(getattr(t, "page", -99)) - int(_page)) <= 1 for t in tables
+            )
+            _cat_hit = bool(re.search(
+                r'PARTIDELOR\s+POLITICE|334/2006|CAMPANIILOR\s+ELECTORALE', _cat))
+            if _page_hit or _cat_hit:
+                report.warnings.append(
+                    f"sumar_reconcile: INFO — sumar[{sj}] {_title[:60]!r} p.{_page} "
+                    f"is a table-only party filing (captured as financial_table chunk)"
+                )
+                continue
+        # Wrapped continuation lines misparsed as entries: title starts
+        # lowercase/digit and the "number" is a date fragment ("1.10")
+        if re.match(r'\s*[a-zăâîșț0-9]', _title) and (
+                not _nr or re.match(r'^\d{1,2}\.\d{1,2}$', _nr)):
+            report.warnings.append(
+                f"sumar_reconcile: INFO — sumar[{sj}] nr={_nr!r} {_title[:60]!r} "
+                f"looks like a wrapped continuation line of the previous entry, "
+                f"not a real act"
+            )
+            continue
         report.warnings.append(
             f"sumar_reconcile: MISSING act — sumar[{sj}] "
             f"{getattr(e, 'doc_type', '?')} nr={getattr(e, 'act_number', '?')!r} "

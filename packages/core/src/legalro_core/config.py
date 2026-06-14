@@ -105,6 +105,10 @@ class RepairLLMConfig(BaseSettings):
     enabled: bool = True
     model: str = "glm-ocr:latest"
     base_url: str = ""   # empty → inherit Settings.llm.base_url
+    seed: int = 42         # deterministic decoding for reproducible repairs
+    num_ctx: int = 16384   # a 72-dpi page image is ~4K tokens; Ollama's 4096
+                           # default silently truncates the prompt
+    num_predict: int = 512
 
 
 class MongoDBConfig(BaseSettings):

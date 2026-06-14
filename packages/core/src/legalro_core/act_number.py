@@ -97,13 +97,15 @@ def is_malformed_act_number(raw: str) -> tuple[bool, str]:
     if len(slash_parts) > 2:
         return True, f"act_number has multiple '/' segments: {s!r}"
     if len(slash_parts) == 2:
-        left, right = slash_parts
-        # Right side should be a 4-digit year; if not, it's a composite ref
-        if not re.match(r"^\d{4}$", right.strip()):
-            return True, f"act_number slash suffix is not a plain year: {s!r}"
+        left, right = (p.strip() for p in slash_parts)
         # Left side should be a plain/thousands int
-        if not _PLAIN_INT.match(left.strip()):
+        if not _PLAIN_INT.match(left):
             return True, f"act_number has non-numeric left side before '/': {s!r}"
+        # Right side: a 4-digit year ("1.642/2016") or a second registry
+        # number — joint-ministerial orders carry one number per authority
+        # ("999/726" = MS 999 + CNAS 726); fold_act_number preserves these
+        if not (re.match(r"^\d{4}$", right) or _PLAIN_INT.match(right)):
+            return True, f"act_number slash suffix is not a year or joint number: {s!r}"
 
     # Stray leading/trailing non-numeric characters (e.g. "E 356", "Nr. 12")
     if re.match(r'^[A-Za-zÀ-ÿ]', s):

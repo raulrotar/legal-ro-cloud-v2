@@ -127,7 +127,11 @@ def run(
     # the ruling lines directly and stitches multi-page runs — replaces the
     # TableFormer-mangled pipe tables.  Enable: extraction.annex_tables_fitz.
     _annex_fitz = getattr(getattr(settings, "extraction", None), "annex_tables_fitz", False)
-    if _annex_fitz and len(_gazette_tables) >= 20:
+    # Trigger on many regions OR one giant annex (822-class issues have a
+    # single 800+-row beneficiary list that never trips the region count)
+    if _annex_fitz and _gazette_tables and (
+            len(_gazette_tables) >= 20
+            or any(t.n_rows >= 100 for t in _gazette_tables)):
         from legalro_processing.extract.annex_tables import extract_annex_tables
         try:
             _fitz_tables = extract_annex_tables(pdf_path)
@@ -433,7 +437,8 @@ def run(
     # the real title backfilled from the sumar; acts the sumar can't title
     # (scanned era) derive one from their own body heading.
     _rec = sumar_reconcile.reconcile(acts, sumar_entries,
-                                     legacy_junk_filter=(era == _Era.SCANNED))
+                                     legacy_junk_filter=(era == _Era.SCANNED),
+                                     tables=_gazette_tables)
     _n_nr_fixed = sumar_reconcile.repair_numbers_from_sumar(acts, sumar_entries, _rec)
 
     # ── Misnumbered-shadow drop: a sumar-unmatched act whose body lives inside
@@ -450,7 +455,8 @@ def run(
         warnings.extend(f"shadow_drop: {m}" for m in _shadow_msgs)
         # re-reconcile: positional passes may have mis-paired against shadows
         _rec = sumar_reconcile.reconcile(acts, sumar_entries,
-                                     legacy_junk_filter=(era == _Era.SCANNED))
+                                     legacy_junk_filter=(era == _Era.SCANNED),
+                                     tables=_gazette_tables)
 
     # ── act_year from the sumar's N/YYYY for matched, number-agreeing acts ───
     _n_years = sumar_reconcile.backfill_years_from_sumar(acts, sumar_entries, _rec)
@@ -583,6 +589,25 @@ def _normalize_gazette_md(md: str, era=None) -> str:
         md = md.replace('ţ', 'ț').replace('Ţ', 'Ț')
     # Extra \x8x byte repairs (seen in some LlamaParse outputs)
     md = md.replace('\x82', 'ă').replace('\x92', 'ș').replace('\x93', 'ț')
+
+    # 2.5 (scanned era only): glm-ocr "fence echo" repair — the model
+    # re-emits previously transcribed content wrapped in ```markdown fences,
+    # minting duplicate blocks (phantom acts). Drop the fence lines, then
+    # collapse non-adjacent duplicate paragraphs. Gates: only substantial
+    # paragraphs (≥120 word-chars — signature blocks repeat legitimately)
+    # without a "Nr. N." closing (those anchor act numbering).
+    if era is not None and "scanned" in str(getattr(era, "value", era)).lower():
+        md = re.sub(r'(?m)^\s*```(?:markdown)?\s*$\n?', '', md)
+        _seen: set[str] = set()
+        _kept: list[str] = []
+        for _p in re.split(r'\n\s*\n', md):
+            _key = re.sub(r'\W+', '', _p).lower()
+            if len(_key) >= 120 and not re.search(r'\bnr\.\s*\d', _p, re.IGNORECASE):
+                if _key in _seen:
+                    continue
+                _seen.add(_key)
+            _kept.append(_p)
+        md = '\n\n'.join(_kept)
 
     # 3. Collapse multiple internal spaces in body lines (not in headings/tables)
     lines = md.splitlines()

@@ -179,6 +179,9 @@ def build_issue_docs(gazette, pdf_path: str | Path, settings, embed: bool = True
     for tbl_idx, tbl in enumerate(getattr(gazette, "tables", [])):
         if not tbl.markdown or len(tbl.markdown) < 10:
             continue
+        # Tables are captured content: count them in coverage, otherwise
+        # annex-heavy issues (294Bis-class) report near-zero coverage
+        mapped_texts.append(tbl.markdown)
         tbl_chunks = _split_table(tbl.markdown)
         tbl_title = tbl.title or f"Tabel {tbl_idx + 1}"
         for part_idx, tbl_text in enumerate(tbl_chunks):

@@ -32,12 +32,12 @@ ACT_KEYWORD_ALTERNATION = (
     r'DECIZIA\b'               # DECIZIA Nr. 576 (DCC or other numbered decision)
     r'|DECIZIE\b'              # standalone DECIZIE (PM / agency decisions)
     r'|HOT[ĂA]R[ÂI]RE[A]?\b'  # HOTĂRÂRE / HOTĂRÂREA / HOTĂRÎRE (HG; incl. pre-1993 î)
-    r'|DECRET(?:-LEGE)?\b'     # DECRET / DECRET-LEGE
+    r'|DE\s?CRET(?:\s*-\s*LEGE)?\b'  # DECRET / DECRET-LEGE / OCR-split "DE CRET"
     r'|ORDIN\b'                # ORDIN (not ORDINUL used in references)
     r'|LEGE[A]?\b'             # LEGE / LEGEA
     r'|OUG\b'
     r'|ORDONAN[TȚ][ĂA]\b'
-    r'|COMUNICAT\b'
+    r'|COMUNICAT(?:UL)?\b'     # COMUNICAT / COMUNICATUL (CĂTRE ȚARĂ, 1989)
     r'|PROCLAMA[TȚ]IE\b'       # PROCLAMAȚIE (1989 acts)
     r'|RAPORT\b'
     r'|RECTIFIC[ĂA]RI\b'
@@ -252,6 +252,23 @@ def _split_by_headings(normalized_markdown: str) -> list[MdActBlock]:
         return []
 
     blocks = []
+
+    # Pre-boundary content: normally masthead + sumar (discard), but scanned
+    # 1989 OCR can emit a whole headingless act before the masthead (column
+    # order). Keep it as a leading block only when it looks like act body:
+    # substantial AND carrying an act-body signal (sumar titles don't).
+    lead = normalized_markdown[:boundaries[0]]
+    lead = re.sub(r'^(?:<!--legalro:[^>]*-->\s*)+', '', lead)
+    # Trim at the masthead: anything from "MONITORUL OFICIAL" on is the
+    # issue banner + sumar, not act content (sumar lines would otherwise
+    # satisfy the body-signal check and mint a phantom).
+    _mast = re.search(r'(?m)^\s*MONITORUL\s+OFICIAL\s*$', lead)
+    if _mast:
+        lead = lead[:_mast.start()]
+    lead_text = _md_to_plain(lead).strip()
+    if len(lead_text) >= 300 and _ACT_BODY_SIGNAL.search(lead_text):
+        blocks.append(_make_block(lead))
+
     for i, start in enumerate(boundaries):
         end = boundaries[i + 1] if i + 1 < len(boundaries) else len(normalized_markdown)
         chunk = normalized_markdown[start:end]
@@ -315,7 +332,9 @@ _FOOTNOTE_START = re.compile(r'^\s*\*\)', re.MULTILINE)
 # recognisable act body beneath them.
 _ACT_BODY_SIGNAL = re.compile(
     r'Art\.\s*\d+|Articol|având\s+în\s+vedere|în\s+temeiul|'
-    r'hotărăşte|dispune|emite|se\s+abrog|se\s+aprobă',
+    r'hotărăşte|dispune|emite|se\s+abrog|se\s+aprobă|'
+    # 1989 communiqués are unsigned prose with none of the boilerplate above
+    r'Consiliul\w*\s+Frontului',
     re.IGNORECASE,
 )
 
@@ -347,8 +366,11 @@ def _is_artefact(block: MdActBlock) -> bool:
 
     # Publisher/printer masthead footer (EDITOR, IBAN, CIF, Tiparul, URL)
     # Require absence of act-body signal as a second gate so a real act that
-    # happens to mention the publisher is not accidentally dropped.
-    if _PUBLISHER_FOOTER.search(text) and not _ACT_BODY_SIGNAL.search(text):
+    # happens to mention the publisher is not accidentally dropped.  Size gate:
+    # the footer itself is ~300 chars — a long block merely *ends* with the
+    # colophon (last act of an issue) and must not be discarded for it.
+    if len(text) < 1000 and _PUBLISHER_FOOTER.search(text) \
+            and not _ACT_BODY_SIGNAL.search(text):
         return True
 
     return False

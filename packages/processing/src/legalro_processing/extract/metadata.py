@@ -11,18 +11,21 @@ except ImportError:
 
 # Act type headers — more specific types first, matched only in the first 300 chars.
 ACT_TYPE_HEADERS = [
-    ("DECRET_LEGE", re.compile(r'^\s*DECRET\s*-\s*LEGE\b', re.IGNORECASE | re.MULTILINE)),
+    # Plural/articulated/OCR-split forms: 1989 gazettes print DECRETE-LEGE,
+    # COMUNICATUL CĂTRE ȚARĂ, and glm-ocr sometimes splits "DE CRET"
+    ("DECRET_LEGE", re.compile(r'^\s*DE\s?CRETE?\s*-\s*LEGE\b', re.IGNORECASE | re.MULTILINE)),
     ("OUG",         re.compile(r'^\s*ORDONAN[ȚTŢ][ĂA]\s+DE\s+URGEN[ȚTŢ][ĂA]\b', re.IGNORECASE | re.MULTILINE)),
     ("ORDONANȚĂ",   re.compile(r'^\s*ORDONAN[ȚTŢ][ĂA]\b', re.IGNORECASE | re.MULTILINE)),
     ("HG",          re.compile(r'^\s*HOT[ĂA]R[ÂA]RE\b', re.IGNORECASE | re.MULTILINE)),
-    ("DECRET",      re.compile(r'^\s*DECRET\b', re.IGNORECASE | re.MULTILINE)),
+    ("DECRET",      re.compile(r'^\s*DE\s?CRETE?\b', re.IGNORECASE | re.MULTILINE)),
     # DCC only when CCR is the issuing body; other DECIZIE acts are PM/agency decisions.
     ("DCC",         re.compile(r'CURTEA\s+CONSTITU[ȚT]IONAL[ĂA]', re.IGNORECASE)),
     ("DECIZIE",     re.compile(r'^\s*DECIZ(?:IE|IA?)\b', re.IGNORECASE | re.MULTILINE)),
     ("ORDIN",       re.compile(r'^\s*ORDIN(?:UL)?\b', re.IGNORECASE | re.MULTILINE)),
     ("LEGE",        re.compile(r'^\s*LEGEA?\b', re.IGNORECASE | re.MULTILINE)),
-    ("COMUNICAT",   re.compile(r'^\s*COMUNICAT\b', re.IGNORECASE | re.MULTILINE)),
+    ("COMUNICAT",   re.compile(r'^\s*COMUNICAT(?:UL|E)?\b', re.IGNORECASE | re.MULTILINE)),
     ("RAPORT",      re.compile(r'^\s*R\s*A\s*P\s*O\s*R\s*T\b', re.IGNORECASE | re.MULTILINE)),
+    ("RECTIFICARE", re.compile(r'^\s*RECTIFIC[ĂA]RI?\b', re.IGNORECASE | re.MULTILINE)),
 ]
 
 # Closing signature block — the act's own date and number.

@@ -316,8 +316,21 @@ _HEADING_DENYLIST = re.compile(
 
 # Positive cues on the same or next line that confirm a line is a heading
 # (not a citation or bare institution name).
+# Bare section-header lines (plural act types). An act heading printed
+# directly under one of these is still a heading — 1989 issues put
+# "COMUNICATUL CĂTRE ȚARĂ" on the line right after the "COMUNICATE" section
+# line, with no blank line between them.
+_SECTION_LINE = re.compile(
+    r'(?i)^[ \t]*(?:COMUNICATE|DECRETE(?:\s*-\s*LEGE)?|DECIZII'
+    r'|HOT[ĂA]R[ÂI]RI|LEGI|ORDINE)\s*$',
+)
+
 _ACT_NUMBER_CUE = re.compile(
-    r'(?i)(?:nr\.?|privind|cu\s+privire\s+la|referitor\s+la)',
+    r'(?i)(?:nr\.?|privind|cu\s+privire\s+la|referitor\s+la'
+    # 1989 communiqués are unnumbered: "COMUNICATUL CĂTRE ȚARĂ" /
+    # next line "al Consiliului Frontului Salvării Naționale" /
+    # body opening straight after the bare COMUNICAT keyword
+    r'|c[ăa]tre\s+[țt]ar[ăa]|al\s+consiliului|av[îi]nd\s+[îi]n\s+vedere)',
 )
 
 
@@ -350,8 +363,9 @@ def promote_act_headings(md: str) -> str:
         if raw.lstrip().startswith('#'):
             result.append(line)
             continue
-        # Must be blank-line-preceded.
-        prev_blank = (i == 0) or not lines[i - 1].strip()
+        # Must be blank-line-preceded (a bare section line counts as blank).
+        prev_blank = (i == 0) or not lines[i - 1].strip() \
+            or bool(_SECTION_LINE.match(_fold_for_heading(lines[i - 1])))
         if not prev_blank:
             result.append(line)
             continue

@@ -182,9 +182,26 @@ def _extract_doc_type(plain_text: str) -> tuple[str, Confidence]:
     # Normalize letterspacing line-by-line (mirrors metadata.py:116-118).
     # Catches "D E C R E T" → "DECRET" in Docling output for born-digital PDFs.
     header_norm = "\n".join(_strip_ls(line) for line in header.split("\n"))
-    for atype, pattern in ACT_TYPE_HEADERS:
-        if pattern.search(header_norm):
-            return atype, "high"
+    # Earliest match wins: the act's own heading is the first keyword in its
+    # block, while later hits are next-section headers caught by the window
+    # (e.g. a COMUNICAT block ending just before a "DECRETE" section line).
+    # List order (specific → generic) breaks position ties. DCC is a CONTEXT
+    # pattern (CURTEA CONSTITUȚIONALĂ appears after the DECIZIA heading), so
+    # it stays an override on DECIZIE rather than competing on position.
+    best: tuple[int, int, str] | None = None
+    _dcc_pattern = None
+    for order, (atype, pattern) in enumerate(ACT_TYPE_HEADERS):
+        if atype == "DCC":
+            _dcc_pattern = pattern
+            continue
+        m = pattern.search(header_norm)
+        if m and (best is None or (m.start(), order) < (best[0], best[1])):
+            best = (m.start(), order, atype)
+    if best:
+        if best[2] == "DECIZIE" and _dcc_pattern is not None \
+                and _dcc_pattern.search(header_norm):
+            return "DCC", "high"
+        return best[2], "high"
     if "CADASTRU" in header_norm[:400]:
         return "ORDIN", "high"
     return "UNKNOWN", "low"

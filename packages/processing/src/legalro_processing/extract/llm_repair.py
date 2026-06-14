@@ -177,7 +177,12 @@ def repair_act(
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user",   "content": user_content, "images": b64_images},
             ],
-            options={"temperature": 0},
+            options={
+                "temperature": 0,
+                "seed": getattr(cfg, "seed", 42) if cfg else 42,
+                "num_ctx": getattr(cfg, "num_ctx", 16384) if cfg else 16384,
+                "num_predict": getattr(cfg, "num_predict", 512) if cfg else 512,
+            },
         )
         raw = (resp.message.content or "").strip()
     except Exception as exc:
