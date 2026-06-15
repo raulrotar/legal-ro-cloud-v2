@@ -42,17 +42,103 @@ def _esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _to_html(header: list, rows: list[list]) -> str:
-    """Single-line flat grid <table>.  Cells are whitespace-collapsed and
-    HTML-escaped.  No colspan/rowspan yet — true spans are Phase 1b/2; this
-    flat grid still carries every cell in source order (QA §3.2/§3.3 xfail).
+def _span_grid(bbox_grid: list[list]) -> tuple[list, list]:
+    """Derive (colspan, rowspan) per cell from source bboxes (mechanism (a)).
+
+    PyMuPDF's find_tables(lines_strict) reports the 294Bis Nomenclator on a
+    uniform N-column grid, but a *merged* cell carries ONE wide bbox spanning
+    several grid columns/rows while the positions it covers are ``None`` (see
+    the page-3 domain band: ``Informatică`` is one cell whose x-range covers 4
+    grid columns, cols to its right being ``None``).  So spans are read off the
+    geometry, not by collapsing equal text.
+
+    Builds the global x-edge / y-edge grid from every non-None bbox, then for
+    each real cell counts how many grid columns its x-range covers (colspan)
+    and how many grid rows its y-range covers (rowspan).  Returns two parallel
+    grids; ``None`` marks a covered position to skip when emitting HTML.
     """
-    parts = ["<table>"]
-    parts.append("<tr>" + "".join(
-        f"<th>{_esc(_clean_cell(c))}</th>" for c in header) + "</tr>")
-    for r in rows:
+    xs: set = set()
+    ys: set = set()
+    for ri, row in enumerate(bbox_grid):
+        for cb in row:
+            if cb:
+                xs.add(round(cb[0], 1)); xs.add(round(cb[2], 1))
+                ys.add(round(cb[1], 1)); ys.add(round(cb[3], 1))
+    xe = sorted(xs)
+    ye = sorted(ys)
+
+    def _idx(v: float, edges: list) -> int:
+        return min(range(len(edges)), key=lambda i: abs(edges[i] - v))
+
+    colspans: list = []
+    rowspans: list = []
+    for row in bbox_grid:
+        cs_row: list = []
+        rs_row: list = []
+        for cb in row:
+            if cb is None:
+                cs_row.append(None); rs_row.append(None)
+                continue
+            cs = max(1, _idx(cb[2], xe) - _idx(cb[0], xe)) if len(xe) > 1 else 1
+            rs = max(1, _idx(cb[3], ye) - _idx(cb[1], ye)) if len(ye) > 1 else 1
+            cs_row.append(cs); rs_row.append(rs)
+        colspans.append(cs_row)
+        rowspans.append(rs_row)
+    return colspans, rowspans
+
+
+def _to_html(header: list, rows: list[list], bbox_grid: list[list] | None = None) -> str:
+    """Single-line flat grid <table>.  Cells are whitespace-collapsed and
+    HTML-escaped.
+
+    When ``bbox_grid`` is supplied (the ``rebuild_cells`` / ``html_tables_annex``
+    path), TRUE ``colspan``/``rowspan`` are derived from cell geometry via
+    ``_span_grid`` and ``None`` positions (covered by a span) are skipped, so a
+    merged domain band is emitted once as e.g. ``<th colspan="3">Matematică</th>``
+    instead of three repeated leaf cells (QA §3.2/§3.3).  Without ``bbox_grid``
+    (flags-off baseline) it falls back to the Phase-1 flat grid — byte-identical.
+    """
+    if bbox_grid is None:
+        parts = ["<table>"]
         parts.append("<tr>" + "".join(
-            f"<td>{_esc(_clean_cell(c))}</td>" for c in r) + "</tr>")
+            f"<th>{_esc(_clean_cell(c))}</th>" for c in header) + "</tr>")
+        for r in rows:
+            parts.append("<tr>" + "".join(
+                f"<td>{_esc(_clean_cell(c))}</td>" for c in r) + "</tr>")
+        parts.append("</table>")
+        return "".join(parts)
+
+    grid = [header] + list(rows)
+    colspans, rowspans = _span_grid(bbox_grid)
+
+    def _attrs(cs: int, rs: int) -> str:
+        a = ""
+        if cs > 1:
+            a += f' colspan="{cs}"'
+        if rs > 1:
+            a += f' rowspan="{rs}"'
+        return a
+
+    parts = ["<table>"]
+    for ri, row in enumerate(grid):
+        cells: list[str] = []
+        for ci, c in enumerate(row):
+            # Skip positions covered by another cell's span (bbox is None), or
+            # rows/cols beyond the geometric grid (defensive).
+            if ri >= len(colspans) or ci >= len(colspans[ri]):
+                tag = "th" if ri == 0 else "td"
+                cells.append(f"<{tag}>{_esc(_clean_cell(c))}</{tag}>")
+                continue
+            cs = colspans[ri][ci]
+            if cs is None:
+                continue
+            rs = rowspans[ri][ci]
+            # Header cell when it's the top header row OR a merged grouping band
+            # (a cell spanning >1 leaf column is, in this transposed nomenclator,
+            # a domain/header band — e.g. <th colspan="4">Informatică</th>).
+            tag = "th" if (ri == 0 or cs > 1 or rs > 1) else "td"
+            cells.append(f"<{tag}{_attrs(cs, rs)}>{_esc(_clean_cell(c))}</{tag}>")
+        parts.append("<tr>" + "".join(cells) + "</tr>")
     parts.append("</table>")
     return "".join(parts)
 
@@ -104,8 +190,10 @@ def _cell_text(page, bbox) -> str:
     return re.sub(r"\s+", " ", " ".join(L[4] for L in lines)).strip()
 
 
-def _extract_grid(page, table) -> list[list[str]]:
-    """Extract a table as a row-major grid with reading-order cell text.
+def _extract_grid(page, table) -> tuple[list[list[str]], list[list]]:
+    """Extract a table as a row-major grid with reading-order cell text, plus a
+    parallel grid of each cell's source bbox (``None`` where the position is
+    covered by another cell's merge — see ``_span_grid``).
 
     Falls back to PyMuPDF's Table.extract() text per-cell only when a cell has
     no recoverable dict text (e.g. empty cells), so behaviour is unchanged for
@@ -113,17 +201,22 @@ def _extract_grid(page, table) -> list[list[str]]:
     """
     raw = table.extract()
     grid: list[list[str]] = []
+    bboxes: list[list] = []
     for ri, trow in enumerate(table.rows):
         out_row: list[str] = []
+        bb_row: list = []
         for ci, cbbox in enumerate(trow.cells):
             txt = _cell_text(page, cbbox) if cbbox else ""
             if not txt and ri < len(raw) and ci < len(raw[ri]):
                 txt = re.sub(r"\s+", " ", str(raw[ri][ci] or "")).strip()
             out_row.append(txt)
+            bb_row.append(tuple(cbbox) if cbbox else None)
         grid.append(out_row)
-    return grid if grid else [
-        [re.sub(r"\s+", " ", str(c or "")).strip() for c in r] for r in raw
-    ]
+        bboxes.append(bb_row)
+    if grid:
+        return grid, bboxes
+    flat = [[re.sub(r"\s+", " ", str(c or "")).strip() for c in r] for r in raw]
+    return flat, [[None] * len(r) for r in flat]
 
 
 # Heading-like line worth using as a table title (annex labels, nomenclature
@@ -178,13 +271,20 @@ def extract_annex_tables(
     cur_rows: list[list] = []
     cur_page0 = 0
     cur_title = ""
+    # parallel bbox grid (rebuild_cells path only) for true-span HTML.  Stays
+    # aligned with [cur_header] + cur_rows; None entries mean span-covered.
+    cur_bb_header: list | None = None
+    cur_bb_rows: list[list] = []
 
     def _flush() -> None:
-        nonlocal cur_header, cur_rows
+        nonlocal cur_header, cur_rows, cur_bb_header, cur_bb_rows
         if cur_header is not None and len(cur_rows) >= min_rows:
+            bbox_grid = None
+            if cur_bb_header is not None:
+                bbox_grid = [cur_bb_header] + cur_bb_rows
             out.append(Table(
                 markdown=_to_markdown(cur_header, cur_rows),
-                html=_to_html(cur_header, cur_rows),
+                html=_to_html(cur_header, cur_rows, bbox_grid),
                 text_flat=_to_flat_text(cur_header, cur_rows),
                 n_cols=len(cur_header),
                 page=cur_page0,
@@ -192,6 +292,7 @@ def extract_annex_tables(
                 n_rows=len(cur_rows),
             ))
         cur_header, cur_rows = None, []
+        cur_bb_header, cur_bb_rows = None, []
 
     for pno, page in enumerate(doc):
         try:
@@ -202,21 +303,29 @@ def extract_annex_tables(
             _flush()
             continue
         for t in tabs:
-            data = _extract_grid(page, t) if rebuild_cells else t.extract()
+            if rebuild_cells:
+                data, bb = _extract_grid(page, t)
+            else:
+                data, bb = t.extract(), None
             if not data:
                 continue
             header, rows = data[0], data[1:]
+            bb_header = bb[0] if bb else None
+            bb_rows = bb[1:] if bb else []
             if cur_header is not None and len(header) == len(cur_header):
                 # continuation: repeated header → drop it; headerless → all rows
                 if _row_key(header) == _row_key(cur_header):
                     cur_rows.extend(rows)
+                    cur_bb_rows.extend(bb_rows)
                     continue
                 if not any(str(c or "").strip() for c in header) or len(rows) == 0:
                     cur_rows.extend([header] + rows)
+                    cur_bb_rows.extend([bb_header] + bb_rows if bb else [])
                     continue
                 # same width but a genuinely new header → new table
             _flush()
             cur_header, cur_rows = header, rows
+            cur_bb_header, cur_bb_rows = bb_header, bb_rows
             cur_page0 = pno
             cur_title = _table_title(page, t.bbox)
     _flush()

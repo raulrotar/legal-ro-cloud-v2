@@ -64,6 +64,11 @@ extraction:
   annex_tables_fitz: true     # ruled annex tables via PyMuPDF find_tables
                               # (multi-page stitch; replaces TableFormer output
                               # when a gazette has >=20 triaged table regions)
+  html_tables_annex: true     # Phase 2: activates the rotated-cell rebuild
+                              # (reading-order repair) + TRUE colspan/rowspan
+                              # HTML annex output (Table.html only; flat/search
+                              # views stay tag-free).  Spans derived from cell
+                              # geometry on the find_tables grid.
 
 # ── Vision-LLM repair pass ───────────────────────────────────────────────────
 # Fires ONLY for acts that fail inline validation (ACT_NUMBER_ZERO,

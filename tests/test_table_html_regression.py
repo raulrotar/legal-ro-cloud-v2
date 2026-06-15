@@ -59,17 +59,16 @@ def test_no_text_bleed_bigrams(nomenclator):
     assert "comunicațiilor (TIC)" in flat
 
 
-# ── §3.2 — true colspan on the domain header band (Phase 2) ─────────────────
-@pytest.mark.xfail(reason="true colspan/rowspan spans = Phase 2", strict=False)
+# ── §3.2 — true colspan on the domain header band (Phase 2 — now PASSES) ─────
 def test_header_colspan_preserved(nomenclator):
-    # Phase 1 emits a flat grid (the band "Matematică" repeats as 3 leaf <th>).
-    # Phase 2 will collapse it into <th colspan="3">Matematică</th>.
+    # Phase 2 derives spans from cell geometry: the merged domain band
+    # "Matematică" (one bbox spanning 3 leaf grid columns) is emitted once as
+    # <th colspan="3">Matematică</th> instead of three repeated leaf cells.
     assert 'colspan="3"' in nomenclator.html
     assert re.search(r'<th colspan="\d+">\s*Matematică', nomenclator.html)
 
 
-# ── §3.3 — hierarchy recoverable from spans (Phase 2) ───────────────────────
-@pytest.mark.xfail(reason="hierarchy via true spans = Phase 2", strict=False)
+# ── §3.3 — hierarchy recoverable from spans (Phase 2 — now PASSES) ───────────
 def test_hierarchy_specialization_to_domain(nomenclator):
     # "Inteligență artificială" → domain "Informatică", 180 credite.
     # Needs span-encoded hierarchy; the flat grid loses the grouping.
@@ -84,6 +83,20 @@ def test_hierarchy_specialization_to_domain(nomenclator):
         r'<th colspan="(\d+)">\s*Informatică\s*</th>', html)
     assert m, "domain 'Informatică' not encoded as a spanning header (no colspan)"
     assert int(m.group(1)) > 1, "Informatică band must span >1 specialization column"
+    # the leaf specialization "Inteligență artificială" and credite 180 are
+    # still present as flat leaf cells under that band.
+    assert "Inteligență artificială" in html and ">180<" in html
+
+
+# ── §3.2b/§3.3 guard — spans are HTML-only, never leak into the search view ──
+def test_spans_do_not_leak_into_flat_view(nomenclator):
+    # Phase 2 emits true colspan/rowspan, but ONLY in Table.html.  The flat /
+    # embedding payload must stay flat and tag-free (guardrail #2).
+    for bad in ("colspan", "rowspan", "<th", "<td", "<table"):
+        assert bad not in nomenclator.text_flat, f"span/tag leaked into flat view: {bad!r}"
+        assert bad not in nomenclator.markdown, f"span/tag leaked into markdown: {bad!r}"
+    # and the spans DO live in the HTML view
+    assert "colspan=" in nomenclator.html
 
 
 # ── §3.4 — oracle cells exact (from §1) ─────────────────────────────────────
