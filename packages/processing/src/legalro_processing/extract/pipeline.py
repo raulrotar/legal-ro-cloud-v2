@@ -127,9 +127,13 @@ def run(
     # the ruling lines directly and stitches multi-page runs — replaces the
     # TableFormer-mangled pipe tables.  Enable: extraction.annex_tables_fitz.
     _annex_fitz = getattr(getattr(settings, "extraction", None), "annex_tables_fitz", False)
+    # Phase 1 HTML-table feature: html_tables_annex also routes onto the same
+    # deterministic fitz annex path (it just additionally carries html/text_flat,
+    # which annex_tables already populates).  Either flag enables the path.
+    _html_annex = getattr(getattr(settings, "extraction", None), "html_tables_annex", False)
     # Trigger on many regions OR one giant annex (822-class issues have a
     # single 800+-row beneficiary list that never trips the region count)
-    if _annex_fitz and _gazette_tables and (
+    if (_annex_fitz or _html_annex) and _gazette_tables and (
             len(_gazette_tables) >= 20
             or any(t.n_rows >= 100 for t in _gazette_tables)):
         from legalro_processing.extract.annex_tables import extract_annex_tables

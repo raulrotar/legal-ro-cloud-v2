@@ -62,6 +62,14 @@ class Table:
     title: str               # nearest preceding heading line, or ""
     n_rows: int              # number of data rows (excludes separator row)
 
+    # ── HTML-table feature (Phase 1, flag-gated) ─────────────────────────
+    # All default to "" / 0 so the ~50k cached JSONs deserialize via
+    # Table(**t) without these keys present.  HTML is the LLM/display view
+    # (chunk.act_full_text); text_flat is the tag-free search/embedding view.
+    html: str = ""           # single-line flat <table>…</table>, HTML-escaped
+    text_flat: str = ""      # tab/space-joined tag-free cell text, source order
+    n_cols: int = 0          # column count of the (flat) header band
+
 
 @dataclass
 class LegalAct:

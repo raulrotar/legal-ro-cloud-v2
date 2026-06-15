@@ -176,13 +176,26 @@ def build_issue_docs(gazette, pdf_path: str | Path, settings, embed: bool = True
     # Tables extracted by the layout triage are stored in the same db.chunks
     # collection so hybrid_search retrieves them automatically.  Each table is
     # one chunk (or split on row boundaries if oversized).
+    # HTML-table feature (Phase 1, flag-gated, default OFF).  When on, the flat
+    # <table> HTML rides ONLY in act_full_text (LLM/display); search/embedding/
+    # coverage stay on the tag-free flattened view.  With the flag off — or for
+    # markdown-only tables that never got html/text_flat populated — every
+    # `x or tbl.markdown` resolves to markdown, so output is byte-identical.
+    _html_annex = getattr(
+        getattr(settings, "extraction", None), "html_tables_annex", False)
     for tbl_idx, tbl in enumerate(getattr(gazette, "tables", [])):
         if not tbl.markdown or len(tbl.markdown) < 10:
             continue
+        # Flattened, tag-free view drives search/embedding/coverage (guardrail #3).
+        tbl_flat = getattr(tbl, "text_flat", "") or tbl.markdown
+        # HTML view (LLM/display only) — gated; falls back to markdown when off.
+        tbl_full = (getattr(tbl, "html", "") or tbl.markdown) if _html_annex \
+            else tbl.markdown
         # Tables are captured content: count them in coverage, otherwise
-        # annex-heavy issues (294Bis-class) report near-zero coverage
-        mapped_texts.append(tbl.markdown)
-        tbl_chunks = _split_table(tbl.markdown)
+        # annex-heavy issues (294Bis-class) report near-zero coverage.
+        # Coverage is measured on the FLATTENED text — HTML tags must not inflate it.
+        mapped_texts.append(tbl_flat)
+        tbl_chunks = _split_table(tbl_flat)
         tbl_title = tbl.title or f"Tabel {tbl_idx + 1}"
         for part_idx, tbl_text in enumerate(tbl_chunks):
             et = f"[TABLE | {tbl_title} | MO {issue_id} | {gazette.issue_year}] {tbl_text}"
@@ -214,7 +227,10 @@ def build_issue_docs(gazette, pdf_path: str | Path, settings, embed: bool = True
                 "text": tbl_text,
                 "text_embedded": et,
                 "text_normalized": normalize_for_search(tbl_text),
-                "act_full_text": tbl.markdown[:12000],
+                # act_full_text carries the full (unsplit) HTML/display view —
+                # NOT fed to _split_table.  text/text_embedded/text_normalized
+                # above stay on the flattened, tag-free view.
+                "act_full_text": tbl_full[:12000],
                 "embedding": vec,
                 "embedding_dim": len(vec),
                 "embedding_model": settings.embeddings.model,

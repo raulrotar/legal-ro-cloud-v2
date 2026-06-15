@@ -90,6 +90,11 @@ class ExtractionConfig(BaseSettings):
     annex_tables_fitz: bool = False     # ruled annex tables via PyMuPDF find_tables
                                         # (multi-page stitch; replaces TableFormer
                                         # output on table-annex gazettes)
+    html_tables_annex: bool = False     # Phase 1 HTML-table feature: route the
+                                        # fitz annex tables (with html/text_flat)
+                                        # onto the GazetteDocument and emit flat
+                                        # <table> HTML into chunk.act_full_text
+                                        # (search/embedding stay on text_flat)
     # Sumar-as-numbering-authority for eras with reliable sumars (BROKEN_2007):
     # "off" | "warn" (log would-be overrides only) | "enforce" (apply)
     sumar_number_authority: str = "enforce"
