@@ -31,8 +31,14 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def nomenclator():
-    """The 294Bis Nomenclator first table (page 2), freshly fitz-extracted."""
-    tables = extract_annex_tables(str(_PDF))
+    """The 294Bis Nomenclator first table (page index 2 = PDF page 3),
+    freshly fitz-extracted.  Table.page is 0-based.
+
+    rebuild_cells=True mirrors the html_tables_annex flag ON — this suite
+    validates the Phase-1 feature, which is what enables the rotated-cell
+    repair / html / text_flat fields it asserts on.
+    """
+    tables = extract_annex_tables(str(_PDF), rebuild_cells=True)
     assert tables, "annex extractor returned no tables"
     return tables[0]
 
@@ -69,8 +75,15 @@ def test_hierarchy_specialization_to_domain(nomenclator):
     # Needs span-encoded hierarchy; the flat grid loses the grouping.
     html = nomenclator.html
     assert "Inteligență artificială" in html and "Informatică" in html
-    # placeholder span-based assertion the Phase-2 encoder must satisfy
-    raise AssertionError("span-based hierarchy not yet encoded")
+    # Real capability check: resolve the specialization's domain via the colspan
+    # on the domain header band.  Phase 1 emits a flat grid (no colspan), so this
+    # fails today and the test xfails; once Phase 2 emits true spans the leaf
+    # column under "Inteligență artificială" maps back to the "Informatică"
+    # band header and this XPASSes — the signal that Phase 2 landed.
+    m = re.search(
+        r'<th colspan="(\d+)">\s*Informatică\s*</th>', html)
+    assert m, "domain 'Informatică' not encoded as a spanning header (no colspan)"
+    assert int(m.group(1)) > 1, "Informatică band must span >1 specialization column"
 
 
 # ── §3.4 — oracle cells exact (from §1) ─────────────────────────────────────

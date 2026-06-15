@@ -27,7 +27,8 @@ merged-header capability is currently unmeasured. These questions close that gap
   "before" numbers, then again after each implementation stage.
 
 ## §1 — Captured extraction baseline (the "before")
-Source: `db/extracted/.../MO_PI_294Bis_2026-04-14.json`, `tables[0]` (page 2).
+Source: `db/extracted/.../MO_PI_294Bis_2026-04-14.json`, `tables[0]`
+(`page` index 2 = PDF page 3; the `page` field is 0-based).
 The Nomenclator is a **transposed multi-level-header** table: attribute rows
 (Domeniu detaliat ISCED, Cod ISCED, Număr de credite, Specializarea, Cod S, …),
 specialization columns. Current defects to be fixed:

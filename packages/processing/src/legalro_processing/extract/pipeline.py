@@ -138,7 +138,10 @@ def run(
             or any(t.n_rows >= 100 for t in _gazette_tables)):
         from legalro_processing.extract.annex_tables import extract_annex_tables
         try:
-            _fitz_tables = extract_annex_tables(pdf_path)
+            # rebuild_cells (rotated-cell repair) is OPT-IN under html_tables_annex;
+            # with only annex_tables_fitz on, cell text stays byte-identical to the
+            # pre-Phase-1 t.extract() output.
+            _fitz_tables = extract_annex_tables(pdf_path, rebuild_cells=_html_annex)
             if _fitz_tables and sum(t.n_rows for t in _fitz_tables) >= \
                     sum(t.n_rows for t in _gazette_tables):
                 warnings.append(

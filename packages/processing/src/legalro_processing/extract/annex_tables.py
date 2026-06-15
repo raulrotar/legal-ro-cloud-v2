@@ -93,6 +93,9 @@ def _cell_text(page, bbox) -> str:
         return ""
     # Vertical (rotated) text: order columns left→right (by x), then by y.
     # Horizontal text: normal top→bottom (by y), then left→right (by x).
+    # NOTE: orientation is inferred from lines[0] only — fine for the current
+    # corpus (a cell is uniformly horizontal or 90°-rotated), but fragile if a
+    # single cell ever mixes orientations.
     rotated = abs(lines[0][1]) > abs(lines[0][0])
     if rotated:
         lines.sort(key=lambda L: (round(L[2], 1), L[3]))
@@ -150,11 +153,19 @@ def _table_title(page, bbox) -> str:
     return ""
 
 
-def extract_annex_tables(pdf_path: str | Path, min_rows: int = 4) -> list:
+def extract_annex_tables(
+    pdf_path: str | Path, min_rows: int = 4, rebuild_cells: bool = False
+) -> list:
     """Extract ruled tables from the PDF text layer, stitching multi-page runs.
 
     Returns a list of gazette_schema.Table.  Tables with fewer than min_rows
     data rows are ignored (boxed notes, mastheads).
+
+    ``rebuild_cells`` (Phase 1 HTML-table feature, gated by ``html_tables_annex``)
+    re-derives every cell from dict lines in reading order via ``_extract_grid``
+    to repair rotated-cell text-bleed.  When False (default, and the validated
+    baseline), cell text comes straight from PyMuPDF's ``Table.extract()`` —
+    byte-identical to the pre-commit behaviour under ``annex_tables_fitz``.
     """
     import fitz
 
@@ -191,7 +202,7 @@ def extract_annex_tables(pdf_path: str | Path, min_rows: int = 4) -> list:
             _flush()
             continue
         for t in tabs:
-            data = _extract_grid(page, t)
+            data = _extract_grid(page, t) if rebuild_cells else t.extract()
             if not data:
                 continue
             header, rows = data[0], data[1:]
