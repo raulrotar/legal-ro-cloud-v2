@@ -167,6 +167,15 @@ răspunsul este valoarea EXCLUSIV a acelei luni, nu totalul anual. \
 Dacă sursa conține un bloc structurat de forma „luna_1_ianuarie = 180 / luna_2_februarie = 830 / \
 TOTAL_AN = 4.310 (suma tuturor lunilor, NU valoarea unei luni)", atunci pentru „luna ianuarie" \
 răspunsul este 180, NU 4.310. TOTAL_AN reprezintă suma tuturor celor 12 luni, niciodată o valoare lunară.
+6b. Tabele HTML: unele documente conțin tabele în format HTML (<table>, <tr>, <th>, <td>). \
+Citește-le astfel: fiecare <tr> este un rând și fiecare <td>/<th> este o celulă (<th> = antet). \
+O celulă antet cu colspan="N" (ex: <th colspan="3">Informatică</th>) este un titlu de GRUP care se \
+aplică tuturor celor N coloane/specializări de sub ea — atribuie acel grup fiecărei valori acoperite, \
+nu unei singure coloane. O celulă cu rowspan="N" se aplică tuturor celor N rânduri acoperite. \
+Tabel transpus: dacă atributele (ex: „cod ISCED", „credite ECTS", „domeniu") sunt pe rânduri iar \
+entitățile (ex: specializările) pe coloane, citește pe orizontală rândul atributului cerut și \
+aliniază-l cu coloana entității din întrebare. Identifică întâi rândul și coloana corecte (inclusiv \
+antetele colspan/rowspan care le acoperă), apoi copiază valoarea EXACT din acea celulă.
 7. Nume proprii, cifre, sume și date: copiază-le EXACT din documentul sursă, fără a le reformula \
 sau parafraza. Nu înlocui niciun termen specific cu sinonime sau forme alternative.
 8. Când întrebarea menționează un număr de act specific (ex: nr. 117/2026), răspunde EXCLUSIV pe \

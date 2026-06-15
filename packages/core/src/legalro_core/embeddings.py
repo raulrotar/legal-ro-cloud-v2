@@ -87,7 +87,8 @@ def _embed_ollama(texts: list[str], settings: Settings, is_query: bool = False) 
     """
     import httpx
 
-    base_url = getattr(settings.llm, "base_url", "http://localhost:11434/v1")
+    base_url = getattr(settings.embeddings, "base_url", "") \
+        or getattr(settings.llm, "base_url", "http://localhost:11434/v1")
     model = settings.embeddings.model
     if is_query and model == "bge-m3":
         texts = [_BGE_M3_QUERY_INSTRUCTION + t for t in texts]

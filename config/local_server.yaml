@@ -1,0 +1,39 @@
+# Local serving config: run the FastAPI /query app on this machine against the
+# SAME cloud Atlas + Gemini, but embed queries via local Ollama bge-m3 so the
+# query vectors match the int8 vectors our pipeline loaded into Atlas.
+#
+#   set -a; . ./.env; set +a          # MONGODB_URI (Atlas) + GEMINI_API_KEY
+#   CONFIG_PATH=config/local_server.yaml API_TOKEN=$LEGALRO_API_TOKEN \
+#     uv run uvicorn legalro_serving.app:app --host 127.0.0.1 --port 7861
+# then point any test at it:  LEGALRO_API_URL=http://localhost:7861
+
+llm:
+  provider: "gemini"
+  base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+  model: "gemini-3.1-flash-lite"
+  api_key: ""            # injected from GEMINI_API_KEY env
+  max_tokens: 8192
+  temperature: 0.1
+  agentic_max_tokens: 4096
+  agentic_timeout: 90.0
+
+embeddings:
+  provider: "ollama"
+  model: "bge-m3"
+  base_url: "http://localhost:11434/v1"   # decoupled from llm.base_url
+  dimensions: 1024
+  batch_size: 64
+
+mongodb:
+  uri: ""               # injected from MONGODB_URI env (Atlas staging)
+  database: "legalro"
+
+search:
+  use_rank_fusion: false
+  vector_weight: 0.3
+  text_weight: 0.7
+  rrf_k: 60
+  num_candidates: 200
+  limit: 15
+  parent_doc_top_n: 3
+  max_parent_chars: 8000

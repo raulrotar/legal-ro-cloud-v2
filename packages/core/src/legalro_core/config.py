@@ -71,6 +71,8 @@ class EmbeddingsConfig(BaseSettings):
     model: str = "nomic-ai/nomic-embed-text-v1.5"
     dimensions: int = 768
     batch_size: int = 32
+    base_url: str = ""   # ollama endpoint; empty → inherit Settings.llm.base_url
+                         # (lets a Gemini-llm server still embed via local Ollama)
 
 
 class OCRConfig(BaseSettings):
@@ -95,6 +97,11 @@ class ExtractionConfig(BaseSettings):
                                         # onto the GazetteDocument and emit flat
                                         # <table> HTML into chunk.act_full_text
                                         # (search/embedding stay on text_flat)
+    html_tables_docling: bool = False   # Phase 2: fill Table.html for born-digital
+                                        # MODERN tables from Docling's native
+                                        # TableItem.export_to_html (true colspan/
+                                        # rowspan), matched onto triaged tables by
+                                        # content.  md_extractor is left untouched.
     # Sumar-as-numbering-authority for eras with reliable sumars (BROKEN_2007):
     # "off" | "warn" (log would-be overrides only) | "enforce" (apply)
     sumar_number_authority: str = "enforce"

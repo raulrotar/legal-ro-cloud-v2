@@ -69,6 +69,9 @@ extraction:
                               # HTML annex output (Table.html only; flat/search
                               # views stay tag-free).  Spans derived from cell
                               # geometry on the find_tables grid.
+  html_tables_docling: true   # Phase 2b: born-digital MODERN tables get
+                              # colspan/rowspan HTML from Docling export_to_html,
+                              # matched onto triaged tables by content.
 
 # ── Vision-LLM repair pass ───────────────────────────────────────────────────
 # Fires ONLY for acts that fail inline validation (ACT_NUMBER_ZERO,

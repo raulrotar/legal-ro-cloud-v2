@@ -245,8 +245,14 @@ def build_issue_docs(gazette, pdf_path: str | Path, settings, embed: bool = True
     return issue_id, gazette.sha256, gazette_doc, chunks, coverage
 
 
-def _split_table(table_md: str, max_tokens: int = 900) -> list[str]:
-    """Split a large pipe table on row boundaries, repeating the header row."""
+def _split_table(table_md: str, max_tokens: int = 150) -> list[str]:
+    """Split a large table on row boundaries, repeating the header row.
+
+    Small max_tokens (≈8–12 rows) keeps a single entity/specialisation from
+    being diluted across an 80+-row block: a rare row term (e.g. one
+    specialisation in the Nomenclator) then dominates its own chunk and ranks
+    high enough to clear the retrieval pipeline cap, instead of sinking to
+    rank ~46 inside a giant chunk (the QT1 root cause)."""
     lines = table_md.splitlines()
     if not lines:
         return [table_md]

@@ -47,7 +47,11 @@ def assemble_context(chunks: list[dict], settings: Settings) -> str:
 
         # Parent-doc path: top-N chunks by RRF rank that have act_full_text
         act_full_text = chunk.get("act_full_text", "")
-        use_parent = bool(act_full_text) and rank < top_n
+        # Table chunks carry their structured HTML (<table> + colspan/rowspan) in
+        # act_full_text; always prefer it over the flat text so merged-header /
+        # transposed semantics reach the LLM even when the table chunk ranks ≥ top_n.
+        is_table = chunk.get("chunk_type") == "financial_table"
+        use_parent = bool(act_full_text) and (rank < top_n or is_table)
         chunk_text = chunk.get("text", "")
 
         if use_parent:

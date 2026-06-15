@@ -152,6 +152,21 @@ def run(
         except Exception as _exc:
             warnings.append(f"annex_tables: skipped ({_exc})")
 
+    # ── Step 2.6: Phase 2 — fill Table.html from Docling export_to_html ────────
+    # Born-digital MODERN tables: harvest Docling's native colspan/rowspan HTML
+    # and match it onto the triaged Table objects (those not already filled by
+    # the fitz-annex path).  Opt-in; md_extractor stays untouched.
+    _html_docling = getattr(getattr(settings, "extraction", None), "html_tables_docling", False)
+    if _html_docling and _gazette_tables and getattr(era, "value", "") == "modern":
+        from legalro_processing.extract.docling_html_tables import fill_table_html
+        try:
+            _n = fill_table_html(_gazette_tables, str(pdf_path))
+            if _n:
+                _t = _log(_gname, "docling_html", f"filled HTML on {_n} table(s)", _t)
+                warnings.append(f"docling_html: filled colspan/rowspan HTML on {_n} table(s)")
+        except Exception as _exc:
+            warnings.append(f"docling_html: skipped ({_exc})")
+
     # ── Step 2.55: recover whole acts Docling dropped from the MD ─────────────
     # Docling's layout stage can silently discard column content (MO 74/2017:
     # 30 decrees in the text layer, 23 in the MD).  Closing numbers present in
